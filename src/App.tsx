@@ -42,6 +42,11 @@ import {
   calculateEventOrderReward,
   calculateEventResult as calculateEventResultImpl,
   getMergeCostToLevel,
+  EventMergeRecord,
+  EventOrderRecord,
+  EventReplayData,
+  EventCoinSource,
+  EventShardSource,
 } from "./gameConfig";
 import SimulationPanel from "./SimulationPanel";
 
@@ -929,6 +934,14 @@ function App(): React.ReactElement {
   const [eventResult, setEventResult] = useState<EventResult | null>(null);
   const [eventHighScore, setEventHighScore] = useState<number>(loadEventHighScore());
   const [showEventEntry, setShowEventEntry] = useState<boolean>(false);
+  const [eventMergeRecords, setEventMergeRecords] = useState<EventMergeRecord[]>([]);
+  const [eventOrderRecords, setEventOrderRecords] = useState<EventOrderRecord[]>([]);
+  const [eventReplayData, setEventReplayData] = useState<EventReplayData | null>(null);
+  const [showEventReplay, setShowEventReplay] = useState<boolean>(false);
+  const eventMergeRecordsRef = useRef<EventMergeRecord[]>([]);
+  const eventOrderRecordsRef = useRef<EventOrderRecord[]>([]);
+  const eventMergeIdCounterRef = useRef<number>(0);
+  const eventOrderIdCounterRef = useRef<number>(0);
 
   const [drag, setDrag] = useState<DragState>({
     isDragging: false,
@@ -1018,6 +1031,8 @@ function App(): React.ReactElement {
   eventStatsRef.current = eventStats;
   eventOrdersRef.current = eventOrders;
   eventSpawnCooldownRef.current = eventSpawnCooldown;
+  eventMergeRecordsRef.current = eventMergeRecords;
+  eventOrderRecordsRef.current = eventOrderRecords;
 
   const showToast = useCallback((message: string): void => {
     setToast(message);
@@ -1401,15 +1416,62 @@ function App(): React.ReactElement {
     setEventStats({ merges: 0, ordersCompleted: 0, maxLevel: 1, totalCoinReward: 0 });
     setEventShardsEarned(0);
     setEventSpawnCooldown(0);
+    setEventMergeRecords([]);
+    setEventOrderRecords([]);
+    setEventReplayData(null);
+    eventMergeRecordsRef.current = [];
+    eventOrderRecordsRef.current = [];
+    eventMergeIdCounterRef.current = 0;
+    eventOrderIdCounterRef.current = 0;
     setShowEventEntry(false);
     setEventMode(true);
     showToast("🎮 限时挑战开始！加油！");
   }, [showToast]);
 
+  const buildEventReplayData = useCallback((): EventReplayData => {
+    const merges = eventMergeRecordsRef.current;
+    const orders = eventOrderRecordsRef.current;
+    const finalBoard = [...eventBoardRef.current];
+    const remainingCoins = eventCoinsRef.current;
+    const totalStepsUsed = EVENT_MAX_STEPS - eventStepsLeftRef.current;
+
+    const mergeCoinTotal = merges.reduce((sum, m) => sum + m.coinReward, 0);
+    const orderCoinTotal = orders.reduce((sum, o) => sum + o.coinReward, 0);
+    const orderShardTotal = orders.reduce((sum, o) => sum + o.shardReward, 0);
+
+    const coinSources: EventCoinSource[] = [
+      { source: "merge", amount: mergeCoinTotal, count: merges.length },
+      { source: "order", amount: orderCoinTotal, count: orders.length },
+      { source: "remaining", amount: remainingCoins, count: 1 },
+    ];
+
+    const levelBonusShards = Math.floor(eventStatsRef.current.maxLevel / 2);
+    const orderBonusShards = eventStatsRef.current.ordersCompleted;
+
+    const shardSources: EventShardSource[] = [
+      { source: "order", amount: orderShardTotal, count: orders.length },
+      { source: "level_bonus", amount: levelBonusShards, count: 1 },
+      { source: "order_bonus", amount: orderBonusShards, count: 1 },
+    ];
+
+    return {
+      merges: [...merges],
+      orders: [...orders],
+      coinSources,
+      shardSources,
+      finalBoard,
+      remainingCoins,
+      totalStepsUsed,
+    };
+  }, []);
+
   const endEvent = useCallback((): void => {
     const result = calculateEventResult(eventStatsRef.current, eventCoinsRef.current, eventShardsEarned);
     setEventResult(result);
-    setShowEventResult(true);
+
+    const replayData = buildEventReplayData();
+    setEventReplayData(replayData);
+    setShowEventReplay(true);
 
     setCoins((prev: number) => prev + result.coins);
     setEventShards((prev: number) => prev + result.shards);
@@ -1421,13 +1483,20 @@ function App(): React.ReactElement {
     }
 
     setEventMode(false);
-  }, [eventShardsEarned, eventHighScore]);
+  }, [eventShardsEarned, eventHighScore, buildEventReplayData]);
 
   const exitEvent = useCallback((): void => {
     setEventMode(false);
     setEventBoard([]);
     showToast("👋 已退出活动，主线进度已保留");
   }, [showToast]);
+
+  const retryEvent = useCallback((): void => {
+    setShowEventReplay(false);
+    setTimeout(() => {
+      startEvent();
+    }, 100);
+  }, [startEvent]);
 
   const consumeEventStep = useCallback((): boolean => {
     if (eventStepsLeftRef.current <= 0) {
@@ -1528,6 +1597,8 @@ function App(): React.ReactElement {
         const newBoard = [...eventBoardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
+        const currentMaxLevel = eventStatsRef.current.maxLevel;
+        const isNewMaxLevel = newLevel > currentMaxLevel;
 
         setEventMergeHint(null);
 
@@ -1540,6 +1611,18 @@ function App(): React.ReactElement {
           maxLevel: Math.max(prev.maxLevel, newLevel),
           totalCoinReward: prev.totalCoinReward + coinReward,
         }));
+
+        const mergeRecord: EventMergeRecord = {
+          id: ++eventMergeIdCounterRef.current,
+          type: "merge",
+          timestamp: Date.now(),
+          stepNumber: EVENT_MAX_STEPS - eventStepsLeftRef.current + 1,
+          sourceLevel,
+          targetLevel: newLevel,
+          coinReward,
+          isNewMaxLevel,
+        };
+        setEventMergeRecords((prev) => [...prev, mergeRecord]);
 
         showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
 
@@ -1599,6 +1682,18 @@ function App(): React.ReactElement {
       ordersCompleted: prev.ordersCompleted + 1,
       totalCoinReward: prev.totalCoinReward + order.reward.coins,
     }));
+
+    const orderRecord: EventOrderRecord = {
+      id: ++eventOrderIdCounterRef.current,
+      type: "order",
+      timestamp: Date.now(),
+      stepNumber: EVENT_MAX_STEPS - eventStepsLeftRef.current + 1,
+      orderId: order.id,
+      items: order.items.map((item) => ({ level: item.level, count: item.count })),
+      coinReward: order.reward.coins,
+      shardReward: order.reward.shards,
+    };
+    setEventOrderRecords((prev) => [...prev, orderRecord]);
 
     showToast(`🎉 订单完成！+${order.reward.coins}💰 +${order.reward.shards}💎`);
   }, [eventCanSubmitOrder, consumeEventStep, showToast]);
@@ -2965,6 +3060,175 @@ function App(): React.ReactElement {
             <button className="event-start-btn" onClick={() => setShowEventResult(false)}>
               太棒了！
             </button>
+          </div>
+        </div>
+      )}
+
+      {showEventReplay && eventReplayData && eventResult && (
+        <div className="modal-overlay event-replay-overlay">
+          <div className="modal-content event-replay-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowEventReplay(false)}>×</button>
+            
+            <div className="event-replay-header">
+              <div className={`event-rank-badge rank-${eventResult.rank}`}>
+                {eventResult.rank}
+              </div>
+              <h2 className="event-replay-title">活动结算复盘</h2>
+              <p className="event-replay-subtitle">
+                用时 {eventReplayData.totalStepsUsed} 步 · 最高等级 Lv.{eventResult.maxLevel}
+              </p>
+            </div>
+
+            <div className="event-replay-summary">
+              <div className="replay-summary-item">
+                <span className="replay-summary-icon">🧁</span>
+                <span className="replay-summary-value">{eventResult.merges}</span>
+                <span className="replay-summary-label">合成次数</span>
+              </div>
+              <div className="replay-summary-item">
+                <span className="replay-summary-icon">📋</span>
+                <span className="replay-summary-value">{eventResult.ordersCompleted}</span>
+                <span className="replay-summary-label">完成订单</span>
+              </div>
+              <div className="replay-summary-item">
+                <span className="replay-summary-icon">💰</span>
+                <span className="replay-summary-value">+{eventResult.coins}</span>
+                <span className="replay-summary-label">金币奖励</span>
+              </div>
+              <div className="replay-summary-item">
+                <span className="replay-summary-icon">💎</span>
+                <span className="replay-summary-value">+{eventResult.shards}</span>
+                <span className="replay-summary-label">碎片奖励</span>
+              </div>
+            </div>
+
+            <div className="event-replay-tabs">
+              <div className="replay-tab active">关键合成</div>
+              <div className="replay-tab">订单完成</div>
+              <div className="replay-tab">收益来源</div>
+            </div>
+
+            <div className="event-replay-content">
+              <div className="replay-section">
+                <h3 className="replay-section-title">✨ 关键合成时间线</h3>
+                {eventReplayData.merges.length > 0 ? (
+                  <div className="replay-timeline">
+                    {[...eventReplayData.merges].reverse().map((merge) => {
+                      const dessert = DESSERTS[merge.targetLevel - 1];
+                      return (
+                        <div key={merge.id} className={`replay-timeline-item ${merge.isNewMaxLevel ? 'milestone' : ''}`}>
+                          <div className="replay-timeline-step">第 {merge.stepNumber} 步</div>
+                          <div className="replay-timeline-content">
+                            <div className="replay-merge-info">
+                              <span className="replay-merge-arrow">
+                                {DESSERTS[merge.sourceLevel - 1]?.emoji} ×2 → {dessert?.emoji}
+                              </span>
+                              <span className="replay-merge-name">{dessert?.name}</span>
+                              {merge.isNewMaxLevel && (
+                                <span className="replay-new-record">🎉 新纪录!</span>
+                              )}
+                            </div>
+                            <div className="replay-merge-reward">+{merge.coinReward} 💰</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="replay-empty">本次活动没有合成记录</div>
+                )}
+              </div>
+
+              <div className="replay-section">
+                <h3 className="replay-section-title">📦 完成订单列表</h3>
+                {eventReplayData.orders.length > 0 ? (
+                  <div className="replay-orders-list">
+                    {eventReplayData.orders.map((order) => (
+                      <div key={order.id} className="replay-order-item">
+                        <div className="replay-order-header">
+                          <span className="replay-order-step">第 {order.stepNumber} 步</span>
+                          <span className="replay-order-rewards">
+                            +{order.coinReward}💰 +{order.shardReward}💎
+                          </span>
+                        </div>
+                        <div className="replay-order-items">
+                          {order.items.map((item, idx) => {
+                            const dessert = DESSERTS[item.level - 1];
+                            return (
+                              <span key={idx} className="replay-order-item-tag">
+                                {dessert?.emoji} {dessert?.name} ×{item.count}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="replay-empty">本次活动没有完成订单</div>
+                )}
+              </div>
+
+              <div className="replay-section">
+                <h3 className="replay-section-title">📊 收益来源明细</h3>
+                
+                <div className="replay-income-section">
+                  <h4 className="replay-income-title">💰 金币来源</h4>
+                  <div className="replay-income-list">
+                    {eventReplayData.coinSources.map((source, idx) => (
+                      <div key={idx} className="replay-income-item">
+                        <span className="replay-income-label">
+                          {source.source === 'merge' && '🧁 合成奖励'}
+                          {source.source === 'order' && '📋 订单奖励'}
+                          {source.source === 'remaining' && '💰 剩余金币'}
+                          {source.count > 1 && ` (${source.count}次)`}
+                        </span>
+                        <span className="replay-income-amount">+{source.amount}</span>
+                      </div>
+                    ))}
+                    <div className="replay-income-total">
+                      <span>总计</span>
+                      <span>{eventResult.coins}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="replay-income-section">
+                  <h4 className="replay-income-title">💎 碎片来源</h4>
+                  <div className="replay-income-list">
+                    {eventReplayData.shardSources.map((source, idx) => (
+                      <div key={idx} className="replay-income-item">
+                        <span className="replay-income-label">
+                          {source.source === 'order' && '📋 订单奖励'}
+                          {source.source === 'level_bonus' && '⭐ 等级奖励'}
+                          {source.source === 'order_bonus' && '🏆 完成数量奖励'}
+                        </span>
+                        <span className="replay-income-amount">+{source.amount}</span>
+                      </div>
+                    ))}
+                    <div className="replay-income-total">
+                      <span>总计</span>
+                      <span>{eventResult.shards}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="event-replay-actions">
+              <button 
+                className="event-replay-btn event-replay-close" 
+                onClick={() => setShowEventReplay(false)}
+              >
+                返回主页
+              </button>
+              <button 
+                className="event-replay-btn event-replay-retry" 
+                onClick={retryEvent}
+              >
+                🔄 重新挑战
+              </button>
+            </div>
           </div>
         </div>
       )}

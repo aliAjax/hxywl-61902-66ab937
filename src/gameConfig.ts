@@ -20,6 +20,52 @@ export interface EventSimOrder {
   reward: { coins: number; shards: number };
 }
 
+export type EventActionType = "merge" | "order" | "spawn" | "move" | "organize";
+
+export interface EventMergeRecord {
+  id: number;
+  type: "merge";
+  timestamp: number;
+  stepNumber: number;
+  sourceLevel: number;
+  targetLevel: number;
+  coinReward: number;
+  isNewMaxLevel: boolean;
+}
+
+export interface EventOrderRecord {
+  id: number;
+  type: "order";
+  timestamp: number;
+  stepNumber: number;
+  orderId: number;
+  items: { level: number; count: number }[];
+  coinReward: number;
+  shardReward: number;
+}
+
+export interface EventCoinSource {
+  source: "merge" | "order" | "remaining";
+  amount: number;
+  count: number;
+}
+
+export interface EventShardSource {
+  source: "order" | "level_bonus" | "order_bonus";
+  amount: number;
+  count: number;
+}
+
+export interface EventReplayData {
+  merges: EventMergeRecord[];
+  orders: EventOrderRecord[];
+  coinSources: EventCoinSource[];
+  shardSources: EventShardSource[];
+  finalBoard: (number | null)[];
+  remainingCoins: number;
+  totalStepsUsed: number;
+}
+
 export const DESSERTS: Dessert[] = [
   { emoji: "🍬", name: "糖果", level: 1, color: "#f9a8d4" },
   { emoji: "🍪", name: "曲奇", level: 2, color: "#fbbf24" },
