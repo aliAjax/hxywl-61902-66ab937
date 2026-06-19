@@ -604,18 +604,74 @@ function saveRecentlyUnlocked(data: RecentlyUnlocked | null): void {
   }
 }
 
-function getNextUnlockHint(currentUnlockedLevels: number[]): { nextLevel: number; parentDessert: Dessert; spawnsNeeded: number; mergesNeeded: number; minCost: number } | null {
+interface UnlockHint {
+  nextLevel: number;
+  nextDessert: Dessert;
+  parentDessert: Dessert;
+  spawnsNeeded: number;
+  mergesNeeded: number;
+  minCost: number;
+  boardProgress: { level: number; emoji: string; name: string; onBoard: number; needed: number; shortfall: number }[];
+  totalShortfallSpawns: number;
+  totalShortfallCost: number;
+}
+
+function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (number | null)[]): UnlockHint | null {
   const maxUnlocked = Math.max(...currentUnlockedLevels);
   const nextLevel = maxUnlocked + 1;
   if (nextLevel > DESSERTS.length) return null;
   const parentDessert = DESSERTS[maxUnlocked - 1];
+  const nextDessert = DESSERTS[nextLevel - 1];
   const cost = getMergeCostToLevel(nextLevel, maxUnlocked);
+
+  const levelCounts = new Map<number, number>();
+  for (const cell of currentBoard) {
+    if (cell !== null && cell >= 1 && cell < nextLevel) {
+      levelCounts.set(cell, (levelCounts.get(cell) || 0) + 1);
+    }
+  }
+
+  const requiredCounts = new Map<number, number>();
+  for (let lv = 1; lv < nextLevel; lv++) {
+    const gap = nextLevel - lv;
+    requiredCounts.set(lv, Math.pow(2, gap));
+  }
+
+  const boardProgress: UnlockHint["boardProgress"] = [];
+  for (let lv = maxUnlocked; lv >= 1; lv--) {
+    const onBoard = levelCounts.get(lv) || 0;
+    const needed = requiredCounts.get(lv) || 0;
+    const shortfall = Math.max(0, needed - onBoard);
+    const d = DESSERTS[lv - 1];
+    boardProgress.push({
+      level: lv,
+      emoji: d.emoji,
+      name: d.name,
+      onBoard,
+      needed,
+      shortfall,
+    });
+  }
+
+  const directParentNeeded = 2;
+  const directParentOnBoard = levelCounts.get(maxUnlocked) || 0;
+  const directShortfall = Math.max(0, directParentNeeded - directParentOnBoard);
+
+  let totalShortfallSpawns = 0;
+  if (directShortfall > 0) {
+    totalShortfallSpawns = directShortfall;
+  }
+
   return {
     nextLevel,
+    nextDessert,
     parentDessert,
     spawnsNeeded: cost.spawnsNeeded,
     mergesNeeded: cost.mergesNeeded,
     minCost: cost.minSpawnCost,
+    boardProgress,
+    totalShortfallSpawns,
+    totalShortfallCost: totalShortfallSpawns * SPAWN_COST,
   };
 }
 
@@ -2070,14 +2126,18 @@ function App(): React.ReactElement {
                 </div>
               </div>
               {(() => {
-                const nextHint = getNextUnlockHint(unlockedLevels);
+                const nextHint = getNextUnlockHint(unlockedLevels, board);
                 if (nextHint) {
+                  const parentProg = nextHint.boardProgress.find(p => p.level === nextHint.parentDessert.level);
                   return (
                     <div className="unlock-celebration-next-hint">
                       <span className="unlock-next-arrow">👆</span>
-                      <span>下一个: {DESSERTS[nextHint.nextLevel - 1].emoji} {DESSERTS[nextHint.nextLevel - 1].name}</span>
+                      <span>下一个: {nextHint.nextDessert.emoji} {nextHint.nextDessert.name}</span>
                       <span className="unlock-next-detail">
                         需合成2个 {nextHint.parentDessert.emoji} {nextHint.parentDessert.name}
+                        {parentProg
+                          ? ` (棋盘 ${parentProg.onBoard}/2${parentProg.shortfall > 0 ? `，差${parentProg.shortfall}个` : " ✓"})`
+                          : " (棋盘 0/2)"}
                       </span>
                     </div>
                   );
@@ -2887,9 +2947,8 @@ function App(): React.ReactElement {
               </span>
             </div>
             {(() => {
-              const nextHint = getNextUnlockHint(unlockedLevels);
+              const nextHint = getNextUnlockHint(unlockedLevels, board);
               if (nextHint) {
-                const nextDessert = DESSERTS[nextHint.nextLevel - 1];
                 return (
                   <div className="next-unlock-hint-card">
                     <div className="next-unlock-hint-header">
@@ -2897,8 +2956,8 @@ function App(): React.ReactElement {
                       <span className="next-unlock-hint-title">下一个解锁目标</span>
                     </div>
                     <div className="next-unlock-hint-target">
-                      <span className="next-unlock-hint-emoji">{nextDessert.emoji}</span>
-                      <span className="next-unlock-hint-name">{nextDessert.name}</span>
+                      <span className="next-unlock-hint-emoji">{nextHint.nextDessert.emoji}</span>
+                      <span className="next-unlock-hint-name">{nextHint.nextDessert.name}</span>
                       <span className="next-unlock-hint-level">Lv.{nextHint.nextLevel}</span>
                     </div>
                     <div className="next-unlock-hint-conditions">
@@ -2906,6 +2965,17 @@ function App(): React.ReactElement {
                         <span className="next-unlock-condition-label">合成条件</span>
                         <span className="next-unlock-condition-value">
                           2× {nextHint.parentDessert.emoji} {nextHint.parentDessert.name}
+                        </span>
+                      </div>
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">棋盘进度</span>
+                        <span className="next-unlock-condition-value">
+                          {(() => {
+                            const parent = nextHint.boardProgress.find(p => p.level === nextHint.parentDessert.level);
+                            return parent
+                              ? <span className={parent.shortfall === 0 ? "next-unlock-ok" : "next-unlock-missing"}>{parent.onBoard}/2</span>
+                              : <span className="next-unlock-missing">0/2</span>;
+                          })()}
                         </span>
                       </div>
                       <div className="next-unlock-condition">
@@ -2920,7 +2990,35 @@ function App(): React.ReactElement {
                         <span className="next-unlock-condition-label">最低花费</span>
                         <span className="next-unlock-condition-value">💰 {nextHint.minCost}</span>
                       </div>
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">差值补充</span>
+                        <span className="next-unlock-condition-value">
+                          {nextHint.totalShortfallSpawns > 0
+                            ? <span className="next-unlock-missing">还需 {nextHint.totalShortfallSpawns} 次生成 (💰{nextHint.totalShortfallCost})</span>
+                            : <span className="next-unlock-ok">棋盘已满足 ✓</span>}
+                        </span>
+                      </div>
                     </div>
+                    {nextHint.boardProgress.length > 1 && (
+                      <div className="next-unlock-board-breakdown">
+                        <div className="next-unlock-breakdown-title">📋 棋盘各级甜品</div>
+                        {nextHint.boardProgress.map((bp) => (
+                          <div key={bp.level} className="next-unlock-breakdown-row">
+                            <span className="next-unlock-breakdown-emoji">{bp.emoji}</span>
+                            <span className="next-unlock-breakdown-name">{bp.name}</span>
+                            <span className="next-unlock-breakdown-bar-wrap">
+                              <span
+                                className="next-unlock-breakdown-bar-fill"
+                                style={{ width: `${Math.min(100, (bp.onBoard / bp.needed) * 100)}%` }}
+                              />
+                            </span>
+                            <span className={`next-unlock-breakdown-count ${bp.shortfall === 0 ? "next-unlock-ok" : "next-unlock-missing"}`}>
+                              {bp.onBoard}/{bp.needed}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               }
