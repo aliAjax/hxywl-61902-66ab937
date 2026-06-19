@@ -22,6 +22,7 @@ export interface SaveFileGameData {
   unlockedLevels: number[];
   unlockTimes: { [key: number]: string };
   orders: SaveFileOrder[];
+  spawnCooldownEnd: number;
 }
 
 export interface SaveFileMeta {
@@ -309,6 +310,16 @@ export function validateSaveFile(save: unknown): ValidateResult {
     }
   }
 
+  if (data.spawnCooldownEnd !== undefined) {
+    if (typeof data.spawnCooldownEnd !== "number" || isNaN(data.spawnCooldownEnd)) {
+      warnings.push("生成冷却结束时间格式异常，已忽略");
+    } else if (!Number.isFinite(data.spawnCooldownEnd)) {
+      warnings.push("生成冷却结束时间超出有效范围，已忽略");
+    } else if (data.spawnCooldownEnd < 0) {
+      warnings.push("生成冷却结束时间不能为负数，已重置");
+    }
+  }
+
   return { isValid: errors.length === 0, errors, warnings };
 }
 
@@ -396,6 +407,12 @@ export function sanitizeSaveData(data: SaveFileGameData, fallbackData: SaveFileG
     result.orders = orders;
   }
 
+  if (typeof data.spawnCooldownEnd === "number" && !isNaN(data.spawnCooldownEnd) && Number.isFinite(data.spawnCooldownEnd) && data.spawnCooldownEnd >= 0) {
+    result.spawnCooldownEnd = Math.floor(data.spawnCooldownEnd);
+  } else {
+    result.spawnCooldownEnd = fallbackData.spawnCooldownEnd ?? 0;
+  }
+
   return result;
 }
 
@@ -416,6 +433,7 @@ export function createSaveFile(data: SaveFileGameData, includeMeta: boolean = tr
         completed: o.completed,
         items: o.items.map(it => ({ ...it })),
       })),
+      spawnCooldownEnd: data.spawnCooldownEnd ?? 0,
     },
   };
   if (includeMeta) {

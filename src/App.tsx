@@ -258,10 +258,11 @@ function createFallbackGameData(): SaveFileGameData {
     unlockedLevels: [1],
     unlockTimes: { 1: new Date().toISOString() },
     orders: [],
+    spawnCooldownEnd: 0,
   };
 }
 
-function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean } {
+function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number } {
   const fallback = createFallbackGameData();
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -279,6 +280,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
           unlockedLevels: parsed.unlockedLevels || [1],
           unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
           orders: parsed.orders || [],
+          spawnCooldownEnd: parsed.spawnCooldownEnd || 0,
         };
       }
 
@@ -310,6 +312,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
           },
           orders: finalOrders,
           loadedFromSave: true,
+          spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
         };
       } else {
         console.warn("存档校验存在问题:", validateResult.errors, validateResult.warnings);
@@ -327,6 +330,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
               ? (sanitized.orders as Order[])
               : generateOrders(sanitized.unlockedLevels),
             loadedFromSave: true,
+            spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
           };
         } catch (innerE) {
           console.error("修复损坏存档失败，使用新存档:", innerE);
@@ -346,10 +350,11 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
     },
     orders: generateOrders([1]),
     loadedFromSave: false,
+    spawnCooldownEnd: 0,
   };
 }
 
-function saveGameState(state: GameState, orders: Order[]): void {
+function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: number): void {
   try {
     const gameData: SaveFileGameData = {
       board: state.board,
@@ -363,6 +368,7 @@ function saveGameState(state: GameState, orders: Order[]): void {
         completed: o.completed,
         items: o.items.map(it => ({ ...it })),
       })),
+      spawnCooldownEnd: spawnCooldownEnd || 0,
     };
     const saveFile = createSaveFile(gameData, false);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(saveFile));
@@ -883,6 +889,8 @@ function calculateEventResult(
   };
 }
 
+type SpawnStatus = "ready" | "cooldown" | "no_coins" | "board_full";
+
 function App(): React.ReactElement {
   const initialLoaded = loadGameState();
   const initialState = initialLoaded.state;
@@ -892,12 +900,19 @@ function App(): React.ReactElement {
   const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
   const [unlockTimes, setUnlockTimes] = useState<{ [key: number]: string }>(initialState.unlockTimes);
   const [orders, setOrders] = useState<Order[]>(initialLoaded.orders);
+  const initialCooldownEnd = initialLoaded.spawnCooldownEnd;
+  const initialRemainingMs = Math.max(0, initialCooldownEnd - Date.now());
+  const initialRemainingSeconds = Math.ceil(initialRemainingMs / 1000);
+  const [spawnCooldownEnd, setSpawnCooldownEnd] = useState<number>(initialCooldownEnd);
+  const [spawnCooldown, setSpawnCooldown] = useState<number>(initialRemainingSeconds);
+  const spawnCooldownEndRef = useRef<number>(initialCooldownEnd);
+  const spawnCooldownRef = useRef<number>(initialRemainingSeconds);
+  const spawnTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isSpawningRef = useRef<boolean>(false);
   const initialTutorial = loadTutorialState();
   const [toast, setToast] = useState<string | null>(null);
   const [selectedDessert, setSelectedDessert] = useState<number | null>(null);
-  const [spawnCooldown, setSpawnCooldown] = useState<number>(0);
-  const spawnCooldownRef = useRef<number>(0);
-  const spawnTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const spawnTimerRef = spawnTickRef;
 
   const [eventMode, setEventMode] = useState<boolean>(false);
   const [eventBoard, setEventBoard] = useState<(number | null)[]>([]);
@@ -993,6 +1008,7 @@ function App(): React.ReactElement {
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
   spawnCooldownRef.current = spawnCooldown;
+  spawnCooldownEndRef.current = spawnCooldownEnd;
   mergeHintRef.current = mergeHint;
   eventMergeHintRef.current = eventMergeHint;
   showMergeHintRef.current = showMergeHint;
@@ -1033,7 +1049,8 @@ function App(): React.ReactElement {
         unlockedLevels: unlockedLevelsRef.current,
         unlockTimes: unlockTimesRef.current,
       },
-      ordersRef.current
+      ordersRef.current,
+      spawnCooldownEndRef.current
     );
     setLastSaveTime(Date.now());
   }, []);
@@ -1047,10 +1064,11 @@ function App(): React.ReactElement {
         unlockedLevels,
         unlockTimes,
       },
-      orders
+      orders,
+      spawnCooldownEnd
     );
     setLastSaveTime(Date.now());
-  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders]);
+  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders, spawnCooldownEnd]);
 
   useEffect(() => {
     recalcMergeHint(board);
@@ -1685,31 +1703,73 @@ function App(): React.ReactElement {
     return emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
   }, []);
 
-  const startSpawnCooldown = useCallback((): void => {
-    if (spawnTimerRef.current) {
-      clearInterval(spawnTimerRef.current);
+  const updateSpawnCooldownFromTimestamp = useCallback((): void => {
+    const now = Date.now();
+    const end = spawnCooldownEndRef.current;
+    const remainingMs = Math.max(0, end - now);
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    if (remainingSeconds !== spawnCooldownRef.current) {
+      spawnCooldownRef.current = remainingSeconds;
+      setSpawnCooldown(remainingSeconds);
     }
-    setSpawnCooldown(SPAWN_COOLDOWN_SECONDS);
-    spawnCooldownRef.current = SPAWN_COOLDOWN_SECONDS;
-    spawnTimerRef.current = setInterval(() => {
-      setSpawnCooldown((prev) => {
-        const next = prev - 1;
-        spawnCooldownRef.current = next;
-        if (next <= 0) {
-          if (spawnTimerRef.current) {
-            clearInterval(spawnTimerRef.current);
-            spawnTimerRef.current = null;
-          }
-          return 0;
-        }
-        return next;
-      });
-    }, 1000);
   }, []);
 
+  useEffect(() => {
+    updateSpawnCooldownFromTimestamp();
+    if (spawnTickRef.current) {
+      clearInterval(spawnTickRef.current);
+    }
+    spawnTickRef.current = setInterval(() => {
+      updateSpawnCooldownFromTimestamp();
+      const end = spawnCooldownEndRef.current;
+      if (Date.now() >= end && spawnTickRef.current) {
+        clearInterval(spawnTickRef.current);
+        spawnTickRef.current = null;
+      }
+    }, 200);
+    return () => {
+      if (spawnTickRef.current) {
+        clearInterval(spawnTickRef.current);
+        spawnTickRef.current = null;
+      }
+    };
+  }, [spawnCooldownEnd, updateSpawnCooldownFromTimestamp]);
+
+  const startSpawnCooldown = useCallback((): void => {
+    const newEnd = Date.now() + SPAWN_COOLDOWN_SECONDS * 1000;
+    spawnCooldownEndRef.current = newEnd;
+    setSpawnCooldownEnd(newEnd);
+    spawnCooldownRef.current = SPAWN_COOLDOWN_SECONDS;
+    setSpawnCooldown(SPAWN_COOLDOWN_SECONDS);
+  }, []);
+
+  const getSpawnStatus = useCallback((): SpawnStatus => {
+    const now = Date.now();
+    const isCooldown = spawnCooldownEndRef.current > now;
+    const hasNoCoins = coinsRef.current < SPAWN_COST;
+    const emptyIndex = getRandomEmptyCell(boardRef.current);
+    const isBoardFull = emptyIndex === null;
+    if (isCooldown) return "cooldown";
+    if (isBoardFull) return "board_full";
+    if (hasNoCoins) return "no_coins";
+    return "ready";
+  }, [getRandomEmptyCell]);
+
   const spawnDessert = useCallback((targetLevel?: number, freeSpawn: boolean = false): boolean => {
-    if (spawnCooldownRef.current > 0) {
-      showToast(`⏳ 冷却中，请等待 ${spawnCooldownRef.current} 秒`);
+    if (isSpawningRef.current) {
+      return false;
+    }
+    const now = Date.now();
+    if (!freeSpawn && spawnCooldownEndRef.current > now) {
+      const remainingMs = spawnCooldownEndRef.current - now;
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      showToast(`⏳ 冷却中，请等待 ${remainingSec} 秒`);
+      return false;
+    }
+
+    const emptyIndex = getRandomEmptyCell(boardRef.current);
+    if (emptyIndex === null) {
+      showToast("🧹 棋盘已满！请点击自动整理或合并甜品");
       return false;
     }
 
@@ -1718,37 +1778,39 @@ function App(): React.ReactElement {
       return false;
     }
 
-    const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
-    const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
-    const level = targetLevel || Math.min(
-      Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL,
-      DESSERTS.length
-    );
-    const emptyIndex = getRandomEmptyCell(boardRef.current);
-    if (emptyIndex === null) {
-      showToast("🧹 棋盘已满！请点击自动整理或合并甜品");
-      return false;
-    }
+    try {
+      isSpawningRef.current = true;
+      const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
+      const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
+      const level = targetLevel || Math.min(
+        Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL,
+        DESSERTS.length
+      );
 
-    if (!freeSpawn) {
-      setCoins((prev: number) => prev - SPAWN_COST);
-    }
-    const newBoard = [...boardRef.current];
-    newBoard[emptyIndex] = level;
-    setBoard(newBoard);
+      if (!freeSpawn) {
+        setCoins((prev: number) => prev - SPAWN_COST);
+      }
+      const newBoard = [...boardRef.current];
+      newBoard[emptyIndex] = level;
+      setBoard(newBoard);
 
-    if (!freeSpawn) {
-      startSpawnCooldown();
-    }
+      if (!freeSpawn) {
+        startSpawnCooldown();
+      }
 
-    const dessert = DESSERTS[level - 1];
-    showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
-    
-    if (!freeSpawn) {
-      advanceTutorialStep("spawn");
+      const dessert = DESSERTS[level - 1];
+      showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
+      
+      if (!freeSpawn) {
+        advanceTutorialStep("spawn");
+      }
+      
+      return true;
+    } finally {
+      setTimeout(() => {
+        isSpawningRef.current = false;
+      }, 50);
     }
-    
-    return true;
   }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep]);
 
   const triggerSuccessFeedback = useCallback((index: number): void => {
@@ -2031,8 +2093,14 @@ function App(): React.ReactElement {
         return;
       }
 
-      if (spawnCooldownRef.current > 0) {
-        showToast(`⏳ 冷却中，请等待 ${spawnCooldownRef.current} 秒`);
+      if (isSpawningRef.current) {
+        return;
+      }
+      const now = Date.now();
+      if (spawnCooldownEndRef.current > now) {
+        const remainingMs = spawnCooldownEndRef.current - now;
+        const remainingSec = Math.ceil(remainingMs / 1000);
+        showToast(`⏳ 冷却中，请等待 ${remainingSec} 秒`);
         return;
       }
 
@@ -2041,20 +2109,27 @@ function App(): React.ReactElement {
         return;
       }
 
-      const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
-      const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
-      const level = Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL;
+      try {
+        isSpawningRef.current = true;
+        const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
+        const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
+        const level = Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL;
 
-      setCoins((prev: number) => prev - SPAWN_COST);
-      const newBoard = [...boardRef.current];
-      newBoard[index] = level;
-      setBoard(newBoard);
+        setCoins((prev: number) => prev - SPAWN_COST);
+        const newBoard = [...boardRef.current];
+        newBoard[index] = level;
+        setBoard(newBoard);
 
-      startSpawnCooldown();
+        startSpawnCooldown();
 
-      const dessert = DESSERTS[level - 1];
-      showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${SPAWN_COST}💰`);
-      advanceTutorialStep("spawn");
+        const dessert = DESSERTS[level - 1];
+        showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${SPAWN_COST}💰`);
+        advanceTutorialStep("spawn");
+      } finally {
+        setTimeout(() => {
+          isSpawningRef.current = false;
+        }, 50);
+      }
     };
 
     document.addEventListener("pointerdown", handleGlobalPointerDown, true);
@@ -3388,29 +3463,84 @@ function App(): React.ReactElement {
           <div className="actions">
             {game.actions.map((action: string) => {
               if (action === "生成甜品") {
-                const isOnCooldown = spawnCooldown > 0;
-                const canAfford = coins >= SPAWN_COST;
-                const isDisabled = isOnCooldown || !canAfford;
+                const spawnStatus = getSpawnStatus();
+                const now = Date.now();
+                const totalMs = SPAWN_COOLDOWN_SECONDS * 1000;
+                const remainingMs = Math.max(0, spawnCooldownEnd - now);
+                const elapsedMs = Math.max(0, totalMs - remainingMs);
+                const cooldownPercent = spawnStatus === "cooldown"
+                  ? Math.min(100, (elapsedMs / totalMs) * 100)
+                  : (remainingMs === 0 ? 100 : 0);
+                const isBoardFull = spawnStatus === "board_full";
+                const isCooldown = spawnStatus === "cooldown";
+                const isNoCoins = spawnStatus === "no_coins";
+                const isReady = spawnStatus === "ready";
+                const isDisabled = !isReady;
                 return (
-                  <button
-                    key={action}
-                    className={`action-spawn ${isOnCooldown ? "on-cooldown" : ""} ${!canAfford ? "cannot-afford" : ""} tutorial-spawn-button`}
-                    onClick={() => handleAction(action)}
-                    disabled={isDisabled}
-                  >
-                    <span className="action-main-text">{action}</span>
-                    <span className="action-sub-text">
-                      {isOnCooldown
-                        ? `⏳ 冷却中 ${spawnCooldown}s`
-                        : `💰 消耗 ${SPAWN_COST} 金币 · Lv.${SPAWN_MIN_LEVEL}-${SPAWN_MAX_LEVEL}`}
-                    </span>
-                    {isOnCooldown && (
-                      <div
-                        className="cooldown-progress"
-                        style={{ width: `${(spawnCooldown / SPAWN_COOLDOWN_SECONDS) * 100}%` }}
-                      />
-                    )}
-                  </button>
+                  <div key="spawn-wrapper" className="spawn-wrapper">
+                    <div className="spawn-queue-card">
+                      <div className="spawn-queue-header">
+                        <span className="spawn-queue-title">📦 生成队列</span>
+                        <span className={`spawn-status-pill ${spawnStatus}`}>
+                          {isReady && "✅ 可生成"}
+                          {isCooldown && `⏳ 冷却 ${spawnCooldown}s`}
+                          {isNoCoins && "💰 金币不足"}
+                          {isBoardFull && "🧹 棋盘已满"}
+                        </span>
+                      </div>
+                      <div className="spawn-queue-content">
+                        <div className="spawn-queue-item">
+                          <div className="spawn-queue-emojis">
+                            <span>🍬</span>
+                            <span>🍪</span>
+                            <span>🧁</span>
+                          </div>
+                          <div className="spawn-queue-info">
+                            <div className="spawn-queue-level">Lv.{SPAWN_MIN_LEVEL} - Lv.{SPAWN_MAX_LEVEL}</div>
+                            <div className="spawn-queue-desc">
+                              {isReady && `点击生成 · 消耗 ${SPAWN_COST}💰`}
+                              {isCooldown && `下一个生成 · 还需 ${spawnCooldown}s`}
+                              {isNoCoins && `需要 ${SPAWN_COST}💰 · 当前 ${coins}💰`}
+                              {isBoardFull && "棋盘无空位，请整理或合并"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      {isCooldown && (
+                        <div className="spawn-queue-progress">
+                          <div
+                            className="spawn-queue-progress-bar"
+                            style={{ width: `${cooldownPercent}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      key={action}
+                      className={`action-spawn tutorial-spawn-button ${isCooldown ? "on-cooldown" : ""} ${isNoCoins ? "cannot-afford" : ""} ${isBoardFull ? "board-full" : ""} ${isReady ? "is-ready" : ""}`}
+                      onClick={() => handleAction(action)}
+                      disabled={isDisabled}
+                    >
+                      <span className="action-main-text">
+                        {isReady && "🎯 生成甜品"}
+                        {isCooldown && `⏳ 冷却中 ${spawnCooldown}s`}
+                        {isNoCoins && "💰 金币不足"}
+                        {isBoardFull && "🧹 棋盘已满"}
+                      </span>
+                      <span className="action-sub-text">
+                        {isReady && `消耗 ${SPAWN_COST} 金币 · Lv.${SPAWN_MIN_LEVEL}-${SPAWN_MAX_LEVEL}`}
+                        {isCooldown && "冷却完成后自动解锁"}
+                        {isNoCoins && `需要 ${SPAWN_COST} 金币 · 当前 ${coins} 金币`}
+                        {isBoardFull && "请合并甜品或点击自动整理"}
+                      </span>
+                      {isCooldown && (
+                        <div
+                          className="cooldown-progress"
+                          style={{ width: `${cooldownPercent}%` }}
+                        />
+                      )}
+                    </button>
+                  </div>
                 );
               }
               if (action === "领取收益") {
