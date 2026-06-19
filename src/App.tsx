@@ -1118,7 +1118,6 @@ function App(): React.ReactElement {
       } else {
         showToast("💰 暂时没有可领取的收益");
       }
-      advanceTutorialStep("offline");
     }
   };
 
