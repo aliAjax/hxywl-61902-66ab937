@@ -51,8 +51,17 @@ export interface LoadResult {
 }
 
 const VALID_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+export function isValidVersionFormat(version: string): boolean {
+  if (!version || typeof version !== "string") return false;
+  return SEMVER_PATTERN.test(version);
+}
 
 export function compareVersions(v1: string, v2: string): number {
+  if (!isValidVersionFormat(v1) || !isValidVersionFormat(v2)) {
+    return -1;
+  }
   const parts1 = v1.split(".").map(Number);
   const parts2 = v2.split(".").map(Number);
   const len = Math.max(parts1.length, parts2.length);
@@ -66,7 +75,7 @@ export function compareVersions(v1: string, v2: string): number {
 }
 
 export function isCompatibleVersion(version: string): boolean {
-  if (!version || typeof version !== "string") return false;
+  if (!isValidVersionFormat(version)) return false;
   const result = compareVersions(version, "1.0.0");
   return result >= 0;
 }
@@ -93,8 +102,10 @@ export function validateSaveFile(save: unknown): ValidateResult {
 
   if (!s.version || typeof s.version !== "string") {
     errors.push("存档缺少版本号");
+  } else if (!isValidVersionFormat(s.version)) {
+    errors.push(`存档版本格式非法: "${s.version}"，应为 "主版本.次版本.修订号" 格式（如 "1.0.0"）`);
   } else if (!isCompatibleVersion(s.version)) {
-    errors.push(`存档版本 ${s.version} 与当前游戏版本不兼容`);
+    errors.push(`存档版本 ${s.version} 与当前游戏版本不兼容，最低要求版本为 1.0.0`);
   }
 
   if (s.timestamp !== undefined && (typeof s.timestamp !== "number" || isNaN(s.timestamp))) {
