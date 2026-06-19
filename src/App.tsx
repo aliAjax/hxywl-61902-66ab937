@@ -25,6 +25,66 @@ const game = {
   "mode": "merge"
 };
 
+const TUTORIAL_KEY = game.id + "-tutorial";
+
+type TutorialStep = 
+  | "welcome"
+  | "spawn"
+  | "merge"
+  | "order"
+  | "collection"
+  | "offline"
+  | "completed";
+
+interface TutorialState {
+  currentStep: TutorialStep;
+  completedSteps: TutorialStep[];
+  hasSpawned: boolean;
+  hasMerged: boolean;
+  hasCompletedOrder: boolean;
+  hasViewedCollection: boolean;
+  hasClaimedOffline: boolean;
+}
+
+const TUTORIAL_STEPS: { step: TutorialStep; title: string; description: string; highlight: string }[] = [
+  {
+    step: "welcome",
+    title: "👋 欢迎来到甜品合成店！",
+    description: "在这里，你可以通过合成甜品创造出更高级的美味，完成订单赚取金币，收集全部10种甜品图鉴。让我们开始吧！",
+    highlight: "none"
+  },
+  {
+    step: "spawn",
+    title: "🍰 生成甜品",
+    description: "点击下方的「生成甜品」按钮，或者点击棋盘上的空格，就能生成新的甜品。每次生成消耗10金币，试试吧！",
+    highlight: "spawn-button"
+  },
+  {
+    step: "merge",
+    title: "✨ 拖拽合成",
+    description: "拖动一个甜品到另一个相同等级的甜品上，它们就会合成为更高级的甜品！合成成功还会获得金币奖励哦~",
+    highlight: "board"
+  },
+  {
+    step: "order",
+    title: "📋 完成订单",
+    description: "右侧面板有顾客的订单，当你有足够的甜品时，点击「提交」按钮就能完成订单获得丰厚奖励！",
+    highlight: "orders"
+  },
+  {
+    step: "collection",
+    title: "📖 查看图鉴",
+    description: "点击图鉴中已解锁的甜品，可以查看它的详细信息。看看你已经收集了多少种甜品吧！",
+    highlight: "collection"
+  },
+  {
+    step: "offline",
+    title: "🌙 离线收益",
+    description: "即使你离开了游戏，甜品店也会持续营业赚取金币。下次进入时记得点击「领取收益」领取哦！",
+    highlight: "offline-button"
+  }
+];
+
 const DESSERTS = [
   { emoji: "🍬", name: "糖果", level: 1, color: "#f9a8d4" },
   { emoji: "🍪", name: "曲奇", level: 2, color: "#fbbf24" },
@@ -237,6 +297,52 @@ function markAsClaimed(): void {
   }
 }
 
+function loadTutorialState(): TutorialState {
+  try {
+    const saved = localStorage.getItem(TUTORIAL_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        currentStep: parsed.currentStep || "welcome",
+        completedSteps: parsed.completedSteps || [],
+        hasSpawned: parsed.hasSpawned || false,
+        hasMerged: parsed.hasMerged || false,
+        hasCompletedOrder: parsed.hasCompletedOrder || false,
+        hasViewedCollection: parsed.hasViewedCollection || false,
+        hasClaimedOffline: parsed.hasClaimedOffline || false,
+      };
+    }
+  } catch (e) {
+    console.error("Failed to load tutorial state:", e);
+  }
+  return {
+    currentStep: "welcome",
+    completedSteps: [],
+    hasSpawned: false,
+    hasMerged: false,
+    hasCompletedOrder: false,
+    hasViewedCollection: false,
+    hasClaimedOffline: false,
+  };
+}
+
+function saveTutorialState(state: TutorialState): void {
+  localStorage.setItem(TUTORIAL_KEY, JSON.stringify(state));
+}
+
+function isTutorialCompleted(): boolean {
+  try {
+    const saved = localStorage.getItem(TUTORIAL_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.currentStep === "completed" || (parsed.completedSteps && parsed.completedSteps.includes("completed"));
+    }
+  } catch (e) {
+    console.error("Failed to check tutorial completion:", e);
+  }
+  return false;
+}
+
 function generateOrder(unlockedLevels: number[]): Order {
   const actualMaxItems = Math.min(MAX_ORDER_ITEMS, unlockedLevels.length);
   const actualMinItems = Math.min(MIN_ORDER_ITEMS, actualMaxItems);
@@ -342,6 +448,7 @@ function submitOrder(board: (number | null)[], order: Order): { newBoard: (numbe
 
 function App(): React.ReactElement {
   const initialState = loadGameState();
+  const initialTutorial = loadTutorialState();
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
@@ -375,6 +482,11 @@ function App(): React.ReactElement {
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
   const [offlineReward, setOfflineReward] = useState<OfflineReward | null>(null);
 
+  const [tutorial, setTutorial] = useState<TutorialState>(initialTutorial);
+  const [showTutorial, setShowTutorial] = useState<boolean>(!isTutorialCompleted() && initialTutorial.currentStep !== "completed");
+  const tutorialRef = useRef<TutorialState>(tutorial);
+  tutorialRef.current = tutorial;
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
@@ -393,6 +505,11 @@ function App(): React.ReactElement {
   hoverRef.current = hoverIndex;
   spawnCooldownRef.current = spawnCooldown;
 
+  const showToast = useCallback((message: string): void => {
+    setToast(message);
+    setTimeout(() => setToast(null), 1500);
+  }, []);
+
   useEffect(() => {
     saveGameState({
       board,
@@ -403,10 +520,100 @@ function App(): React.ReactElement {
     });
   }, [board, coins, maxLevel, unlockedLevels, unlockTimes]);
 
-  const showToast = useCallback((message: string): void => {
-    setToast(message);
-    setTimeout(() => setToast(null), 1500);
+  useEffect(() => {
+    saveTutorialState(tutorial);
+  }, [tutorial]);
+
+  const getCurrentTutorialStep = useCallback(() => {
+    return TUTORIAL_STEPS.find(s => s.step === tutorial.currentStep) || null;
+  }, [tutorial.currentStep]);
+
+  const advanceTutorialStep = useCallback((completedAction: TutorialStep): void => {
+    if (!showTutorial) return;
+
+    setTutorial((prev) => {
+      const newCompletedSteps = prev.completedSteps.includes(completedAction)
+        ? prev.completedSteps
+        : [...prev.completedSteps, completedAction];
+
+      let newState = { ...prev, completedSteps: newCompletedSteps };
+
+      switch (completedAction) {
+        case "spawn":
+          newState.hasSpawned = true;
+          break;
+        case "merge":
+          newState.hasMerged = true;
+          break;
+        case "order":
+          newState.hasCompletedOrder = true;
+          break;
+        case "collection":
+          newState.hasViewedCollection = true;
+          break;
+        case "offline":
+          newState.hasClaimedOffline = true;
+          break;
+      }
+
+      const stepOrder: TutorialStep[] = ["welcome", "spawn", "merge", "order", "collection", "offline", "completed"];
+      const currentIndex = stepOrder.indexOf(prev.currentStep);
+      
+      if (prev.currentStep === completedAction || 
+          (completedAction === "spawn" && prev.currentStep === "spawn") ||
+          (completedAction === "merge" && prev.currentStep === "merge") ||
+          (completedAction === "order" && prev.currentStep === "order") ||
+          (completedAction === "collection" && prev.currentStep === "collection") ||
+          (completedAction === "offline" && prev.currentStep === "offline")) {
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < stepOrder.length - 1) {
+          newState.currentStep = stepOrder[nextIndex];
+        } else {
+          newState.currentStep = "completed";
+        }
+      }
+
+      if (newState.currentStep === "completed") {
+        setTimeout(() => setShowTutorial(false), 500);
+      }
+
+      return newState;
+    });
+  }, [showTutorial]);
+
+  const goToNextTutorialStep = useCallback((): void => {
+    setTutorial((prev) => {
+      const stepOrder: TutorialStep[] = ["welcome", "spawn", "merge", "order", "collection", "offline", "completed"];
+      const currentIndex = stepOrder.indexOf(prev.currentStep);
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex >= stepOrder.length - 1) {
+        setTimeout(() => setShowTutorial(false), 300);
+        return { ...prev, currentStep: "completed", completedSteps: [...prev.completedSteps, prev.currentStep] };
+      }
+
+      return {
+        ...prev,
+        currentStep: stepOrder[nextIndex],
+        completedSteps: [...prev.completedSteps, prev.currentStep],
+      };
+    });
   }, []);
+
+  const skipTutorial = useCallback((): void => {
+    setTutorial((prev) => ({
+      ...prev,
+      currentStep: "completed",
+      completedSteps: [...prev.completedSteps, "welcome", "spawn", "merge", "order", "collection", "offline", "completed"],
+      hasSpawned: true,
+      hasMerged: true,
+      hasCompletedOrder: true,
+      hasViewedCollection: true,
+      hasClaimedOffline: true,
+    }));
+    setShowTutorial(false);
+    showToast("👌 已跳过新手引导");
+  }, [showToast]);
 
   const formatOfflineDuration = (minutes: number): string => {
     if (minutes < 60) {
@@ -428,7 +635,8 @@ function App(): React.ReactElement {
     markAsClaimed();
     setShowOfflineModal(false);
     showToast(`🎉 离线收益领取成功！+${offlineReward.coins} 金币`);
-  }, [offlineReward, showToast]);
+    advanceTutorialStep("offline");
+  }, [offlineReward, showToast, advanceTutorialStep]);
 
   const checkOfflineReward = useCallback((): void => {
     const reward = calculateOfflineReward();
@@ -540,8 +748,13 @@ function App(): React.ReactElement {
 
     const dessert = DESSERTS[level - 1];
     showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
+    
+    if (!freeSpawn) {
+      advanceTutorialStep("spawn");
+    }
+    
     return true;
-  }, [getRandomEmptyCell, showToast, startSpawnCooldown]);
+  }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep]);
 
   const triggerSuccessFeedback = useCallback((index: number): void => {
     setFeedback({
@@ -624,6 +837,9 @@ function App(): React.ReactElement {
             [newLevel]: new Date().toISOString(),
           }));
         }
+        
+        advanceTutorialStep("merge");
+        
         return true;
       }
     } else {
@@ -631,7 +847,7 @@ function App(): React.ReactElement {
       showToast("❌ 等级不同，无法合成！");
       return false;
     }
-  }, [showToast, triggerSuccessFeedback, triggerFailFeedback]);
+  }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep]);
 
   const getCellIndexFromPoint = useCallback((clientX: number, clientY: number): number | null => {
     const cells = cellRefs.current;
@@ -799,6 +1015,7 @@ function App(): React.ReactElement {
 
       const dessert = DESSERTS[level - 1];
       showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${SPAWN_COST}💰`);
+      advanceTutorialStep("spawn");
     };
 
     document.addEventListener("pointerdown", handleGlobalPointerDown, true);
@@ -814,7 +1031,7 @@ function App(): React.ReactElement {
       window.removeEventListener("pointercancel", handleGlobalPointerCancel);
       document.removeEventListener("click", handleGlobalClick, true);
     };
-  }, [getCellIndexFromPoint, performMerge, showToast]);
+  }, [getCellIndexFromPoint, performMerge, showToast, advanceTutorialStep]);
 
   const handleSubmitOrder = useCallback((order: Order): void => {
     if (order.completed) {
@@ -842,6 +1059,7 @@ function App(): React.ReactElement {
     );
 
     showToast(`🎉 订单完成！+${order.reward}金币`);
+    advanceTutorialStep("order");
 
     setTimeout(() => {
       setOrders((prev: Order[]) => {
@@ -850,7 +1068,7 @@ function App(): React.ReactElement {
         return [...remaining, ...newOrders];
       });
     }, 1500);
-  }, [showToast]);
+  }, [showToast, advanceTutorialStep]);
 
   const handleRefreshOrders = useCallback((): void => {
     if (unlockedLevelsRef.current.length === 0) {
@@ -952,9 +1170,120 @@ function App(): React.ReactElement {
 
   const dragOffset = getDragOffset();
 
+  const currentTutorialStep = getCurrentTutorialStep();
+  const tutorialHighlight = currentTutorialStep?.highlight || "none";
+
+  const isHighlighted = (element: string): boolean => {
+    if (!showTutorial) return false;
+    return tutorialHighlight === element;
+  };
+
+  const mainClass = `game-shell ${showTutorial ? "tutorial-active" : ""} ${
+    isHighlighted("spawn-button") ? "tutorial-highlight-spawn" : ""
+  } ${
+    isHighlighted("board") ? "tutorial-highlight-board" : ""
+  } ${
+    isHighlighted("orders") ? "tutorial-highlight-orders" : ""
+  } ${
+    isHighlighted("collection") ? "tutorial-highlight-collection" : ""
+  } ${
+    isHighlighted("offline-button") ? "tutorial-highlight-offline" : ""
+  }`;
+
   return (
-    <main className="game-shell">
+    <main className={mainClass}>
       {toast && <div className="toast">{toast}</div>}
+
+      {showTutorial && currentTutorialStep && tutorial.currentStep !== "completed" && (
+        <div className="tutorial-overlay">
+          <div className="tutorial-dialog" onClick={(e) => e.stopPropagation()}>
+            <button className="tutorial-skip" onClick={skipTutorial}>跳过引导</button>
+            <div className="tutorial-progress">
+              {TUTORIAL_STEPS.filter(s => s.step !== "completed").map((s, idx) => (
+                <div
+                  key={s.step}
+                  className={`tutorial-progress-dot ${
+                    tutorial.completedSteps.includes(s.step) ? "completed" :
+                    s.step === tutorial.currentStep ? "active" : ""
+                  }`}
+                />
+              ))}
+            </div>
+            <h2 className="tutorial-title">{currentTutorialStep.title}</h2>
+            <p className="tutorial-description">{currentTutorialStep.description}</p>
+            
+            {tutorial.currentStep === "welcome" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                开始学习 🚀
+              </button>
+            )}
+            
+            {tutorial.currentStep === "spawn" && !tutorial.hasSpawned && (
+              <div className="tutorial-hint">
+                <span className="tutorial-gesture">👆</span>
+                <p>点击下方高亮的「生成甜品」按钮</p>
+              </div>
+            )}
+            
+            {tutorial.currentStep === "merge" && !tutorial.hasMerged && (
+              <div className="tutorial-hint">
+                <span className="tutorial-gesture tutorial-drag-gesture">✋</span>
+                <p>拖动一个甜品到另一个相同等级的甜品上</p>
+              </div>
+            )}
+            
+            {tutorial.currentStep === "order" && !tutorial.hasCompletedOrder && (
+              <div className="tutorial-hint">
+                <span className="tutorial-gesture">👆</span>
+                <p>当订单材料充足时，点击「提交」按钮</p>
+              </div>
+            )}
+            
+            {tutorial.currentStep === "collection" && !tutorial.hasViewedCollection && (
+              <div className="tutorial-hint">
+                <span className="tutorial-gesture">👆</span>
+                <p>点击图鉴中已解锁的甜品查看详情</p>
+              </div>
+            )}
+            
+            {tutorial.currentStep === "offline" && !tutorial.hasClaimedOffline && (
+              <div className="tutorial-hint">
+                <span className="tutorial-gesture">👆</span>
+                <p>点击「领取收益」按钮了解离线收益功能</p>
+                <button className="tutorial-next-btn" onClick={() => advanceTutorialStep("offline")}>
+                  我知道了 ✓
+                </button>
+              </div>
+            )}
+
+            {tutorial.hasSpawned && tutorial.currentStep === "spawn" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                下一步 →
+              </button>
+            )}
+            {tutorial.hasMerged && tutorial.currentStep === "merge" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                下一步 →
+              </button>
+            )}
+            {tutorial.hasCompletedOrder && tutorial.currentStep === "order" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                下一步 →
+              </button>
+            )}
+            {tutorial.hasViewedCollection && tutorial.currentStep === "collection" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                下一步 →
+              </button>
+            )}
+            {tutorial.hasClaimedOffline && tutorial.currentStep === "offline" && (
+              <button className="tutorial-next-btn" onClick={goToNextTutorialStep}>
+                完成引导 🎉
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {showOfflineModal && offlineReward && offlineReward.isValid && (
         <div className="modal-overlay" onClick={() => setShowOfflineModal(false)}>
@@ -1096,7 +1425,7 @@ function App(): React.ReactElement {
 
       <section className={"playground " + game.mode}>
         <div
-          className="board merge-board"
+          className="board merge-board tutorial-board"
           ref={boardRefEl}
         >
           {board.map((cell: number | null, index: number) => {
@@ -1129,7 +1458,7 @@ function App(): React.ReactElement {
           <p>✨ <strong>合成规则：</strong>相同等级甜品合并升级，不同等级无法合成。每次生成消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 甜品。</p>
           <p>🧹 <strong>棋盘管理：</strong>棋盘满时请点击"自动整理"聚拢相同等级，方便后续拖拽合成。</p>
 
-          <div className="orders-panel">
+          <div className="orders-panel tutorial-orders-panel">
             <div className="orders-header">
               <h3>📋 当前订单</h3>
               <button className="refresh-btn" onClick={handleRefreshOrders}>🔄 刷新</button>
@@ -1200,8 +1529,13 @@ function App(): React.ReactElement {
                 return (
                   <div
                     key={dessert.level}
-                    className={`collection-item ${isUnlocked ? "unlocked" : "locked"}`}
-                    onClick={() => isUnlocked && setSelectedDessert(dessert.level)}
+                    className={`collection-item ${isUnlocked ? "unlocked" : "locked"} tutorial-collection-item`}
+                    onClick={() => {
+                      if (isUnlocked) {
+                        setSelectedDessert(dessert.level);
+                        advanceTutorialStep("collection");
+                      }
+                    }}
                     title={isUnlocked ? `${dessert.name} - 点击查看详情` : "??? 未解锁"}
                   >
                     <div className="collection-item-inner">
@@ -1237,7 +1571,7 @@ function App(): React.ReactElement {
                 return (
                   <button
                     key={action}
-                    className={`action-spawn ${isOnCooldown ? "on-cooldown" : ""} ${!canAfford ? "cannot-afford" : ""}`}
+                    className={`action-spawn ${isOnCooldown ? "on-cooldown" : ""} ${!canAfford ? "cannot-afford" : ""} tutorial-spawn-button`}
                     onClick={() => handleAction(action)}
                     disabled={isDisabled}
                   >
@@ -1254,6 +1588,11 @@ function App(): React.ReactElement {
                       />
                     )}
                   </button>
+                );
+              }
+              if (action === "领取收益") {
+                return (
+                  <button key={action} className="tutorial-offline-button" onClick={() => handleAction(action)}>{action}</button>
                 );
               }
               return (
