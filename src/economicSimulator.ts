@@ -271,7 +271,8 @@ export function runSimulation(params: SimulationParams): SimulationResult {
       }
 
       const weekMinutes = 7 * 24 * 60;
-      if (totalTime >= weekMinutes * (eventsAttempted + 1) / Math.max(1, params.eventFrequencyPerWeek)) {
+      if (params.eventFrequencyPerWeek > 0 &&
+          totalTime >= weekMinutes * (eventsAttempted + 1) / params.eventFrequencyPerWeek) {
         eventsAttempted++;
         if (rng() < params.eventParticipationRate) {
           eventsParticipated++;
