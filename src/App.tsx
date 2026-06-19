@@ -604,6 +604,17 @@ function saveRecentlyUnlocked(data: RecentlyUnlocked | null): void {
   }
 }
 
+interface UnlockHintBoardRow {
+  level: number;
+  emoji: string;
+  name: string;
+  onBoard: number;
+  needed: number;
+  shortfall: number;
+  carriedUp: number;
+  effectiveCount: number;
+}
+
 interface UnlockHint {
   nextLevel: number;
   nextDessert: Dessert;
@@ -611,9 +622,11 @@ interface UnlockHint {
   spawnsNeeded: number;
   mergesNeeded: number;
   minCost: number;
-  boardProgress: { level: number; emoji: string; name: string; onBoard: number; needed: number; shortfall: number }[];
+  boardProgress: UnlockHintBoardRow[];
   totalShortfallSpawns: number;
   totalShortfallCost: number;
+  canMergeOnBoard: boolean;
+  parentEffectiveCount: number;
 }
 
 function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (number | null)[]): UnlockHint | null {
@@ -623,6 +636,7 @@ function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (numbe
   const parentDessert = DESSERTS[maxUnlocked - 1];
   const nextDessert = DESSERTS[nextLevel - 1];
   const cost = getMergeCostToLevel(nextLevel, maxUnlocked);
+  const parentLevel = maxUnlocked;
 
   const levelCounts = new Map<number, number>();
   for (const cell of currentBoard) {
@@ -631,35 +645,54 @@ function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (numbe
     }
   }
 
-  const requiredCounts = new Map<number, number>();
-  for (let lv = 1; lv < nextLevel; lv++) {
-    const gap = nextLevel - lv;
-    requiredCounts.set(lv, Math.pow(2, gap));
+  const effectiveCounts = new Map<number, number>();
+  const carriedUp = new Map<number, number>();
+  let carryFromBelow = 0;
+  for (let lv = 1; lv <= parentLevel; lv++) {
+    const raw = levelCounts.get(lv) || 0;
+    const totalAtLevel = raw + carryFromBelow;
+    if (lv === parentLevel) {
+      effectiveCounts.set(lv, totalAtLevel);
+      carriedUp.set(lv, 0);
+    } else {
+      const carried = Math.floor(totalAtLevel / 2);
+      const leftover = totalAtLevel - carried * 2;
+      effectiveCounts.set(lv, leftover);
+      carriedUp.set(lv, carried);
+      carryFromBelow = carried;
+    }
   }
 
-  const boardProgress: UnlockHint["boardProgress"] = [];
-  for (let lv = maxUnlocked; lv >= 1; lv--) {
-    const onBoard = levelCounts.get(lv) || 0;
-    const needed = requiredCounts.get(lv) || 0;
-    const shortfall = Math.max(0, needed - onBoard);
+  const parentOnBoard = levelCounts.get(parentLevel) || 0;
+  const parentEffective = effectiveCounts.get(parentLevel) || 0;
+  const parentNeeded = 2;
+  const parentShortfall = Math.max(0, parentNeeded - parentEffective);
+
+  const parentLv1Value = Math.pow(2, parentLevel - 1);
+  let totalLv1Value = 0;
+  for (const [lv, count] of levelCounts.entries()) {
+    totalLv1Value += count * Math.pow(2, lv - 1);
+  }
+  const targetLv1Value = 2 * parentLv1Value;
+  const shortfallLv1Value = Math.max(0, targetLv1Value - totalLv1Value);
+
+  const boardProgress: UnlockHintBoardRow[] = [];
+  for (let lv = parentLevel; lv >= 1; lv--) {
     const d = DESSERTS[lv - 1];
+    const onBoard = levelCounts.get(lv) || 0;
+    const needed = lv === parentLevel ? 2 : 0;
+    const effective = effectiveCounts.get(lv) || 0;
+    const carried = carriedUp.get(lv) || 0;
     boardProgress.push({
       level: lv,
       emoji: d.emoji,
       name: d.name,
       onBoard,
       needed,
-      shortfall,
+      shortfall: lv === parentLevel ? parentShortfall : 0,
+      carriedUp: carried,
+      effectiveCount: effective,
     });
-  }
-
-  const directParentNeeded = 2;
-  const directParentOnBoard = levelCounts.get(maxUnlocked) || 0;
-  const directShortfall = Math.max(0, directParentNeeded - directParentOnBoard);
-
-  let totalShortfallSpawns = 0;
-  if (directShortfall > 0) {
-    totalShortfallSpawns = directShortfall;
   }
 
   return {
@@ -670,8 +703,10 @@ function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (numbe
     mergesNeeded: cost.mergesNeeded,
     minCost: cost.minSpawnCost,
     boardProgress,
-    totalShortfallSpawns,
-    totalShortfallCost: totalShortfallSpawns * SPAWN_COST,
+    totalShortfallSpawns: shortfallLv1Value,
+    totalShortfallCost: shortfallLv1Value * SPAWN_COST,
+    canMergeOnBoard: parentEffective >= 2,
+    parentEffectiveCount: parentEffective,
   };
 }
 
@@ -2128,16 +2163,15 @@ function App(): React.ReactElement {
               {(() => {
                 const nextHint = getNextUnlockHint(unlockedLevels, board);
                 if (nextHint) {
-                  const parentProg = nextHint.boardProgress.find(p => p.level === nextHint.parentDessert.level);
                   return (
                     <div className="unlock-celebration-next-hint">
                       <span className="unlock-next-arrow">👆</span>
                       <span>下一个: {nextHint.nextDessert.emoji} {nextHint.nextDessert.name}</span>
                       <span className="unlock-next-detail">
                         需合成2个 {nextHint.parentDessert.emoji} {nextHint.parentDessert.name}
-                        {parentProg
-                          ? ` (棋盘 ${parentProg.onBoard}/2${parentProg.shortfall > 0 ? `，差${parentProg.shortfall}个` : " ✓"})`
-                          : " (棋盘 0/2)"}
+                        {nextHint.canMergeOnBoard
+                          ? " (棋盘已满足 ✓)"
+                          : ` (折算 ${nextHint.parentEffectiveCount}/2，还差${nextHint.totalShortfallSpawns}个Lv.1)`}
                       </span>
                     </div>
                   );
@@ -2968,13 +3002,20 @@ function App(): React.ReactElement {
                         </span>
                       </div>
                       <div className="next-unlock-condition">
-                        <span className="next-unlock-condition-label">棋盘进度</span>
+                        <span className="next-unlock-condition-label">折算后进度</span>
                         <span className="next-unlock-condition-value">
                           {(() => {
                             const parent = nextHint.boardProgress.find(p => p.level === nextHint.parentDessert.level);
-                            return parent
-                              ? <span className={parent.shortfall === 0 ? "next-unlock-ok" : "next-unlock-missing"}>{parent.onBoard}/2</span>
-                              : <span className="next-unlock-missing">0/2</span>;
+                            const statusClass = nextHint.canMergeOnBoard ? "next-unlock-ok" : "next-unlock-missing";
+                            const rawHint = parent && parent.onBoard !== nextHint.parentEffectiveCount
+                              ? ` (棋盘 ${parent.onBoard} + 折算)`
+                              : "";
+                            return (
+                              <span>
+                                <span className={statusClass}>{nextHint.parentEffectiveCount}/2</span>
+                                <span style={{ fontSize: '10px', color: '#64748b', marginLeft: '4px' }}>{rawHint}</span>
+                              </span>
+                            );
                           })()}
                         </span>
                       </div>
@@ -2993,30 +3034,45 @@ function App(): React.ReactElement {
                       <div className="next-unlock-condition">
                         <span className="next-unlock-condition-label">差值补充</span>
                         <span className="next-unlock-condition-value">
-                          {nextHint.totalShortfallSpawns > 0
-                            ? <span className="next-unlock-missing">还需 {nextHint.totalShortfallSpawns} 次生成 (💰{nextHint.totalShortfallCost})</span>
-                            : <span className="next-unlock-ok">棋盘已满足 ✓</span>}
+                          {nextHint.canMergeOnBoard
+                            ? <span className="next-unlock-ok">棋盘已满足 ✓</span>
+                            : <span className="next-unlock-missing">还需 {nextHint.totalShortfallSpawns} 个 Lv.1 (💰{nextHint.totalShortfallCost})</span>}
                         </span>
                       </div>
                     </div>
                     {nextHint.boardProgress.length > 1 && (
                       <div className="next-unlock-board-breakdown">
-                        <div className="next-unlock-breakdown-title">📋 棋盘各级甜品</div>
-                        {nextHint.boardProgress.map((bp) => (
-                          <div key={bp.level} className="next-unlock-breakdown-row">
-                            <span className="next-unlock-breakdown-emoji">{bp.emoji}</span>
-                            <span className="next-unlock-breakdown-name">{bp.name}</span>
-                            <span className="next-unlock-breakdown-bar-wrap">
-                              <span
-                                className="next-unlock-breakdown-bar-fill"
-                                style={{ width: `${Math.min(100, (bp.onBoard / bp.needed) * 100)}%` }}
-                              />
-                            </span>
-                            <span className={`next-unlock-breakdown-count ${bp.shortfall === 0 ? "next-unlock-ok" : "next-unlock-missing"}`}>
-                              {bp.onBoard}/{bp.needed}
-                            </span>
-                          </div>
-                        ))}
+                        <div className="next-unlock-breakdown-title">📋 棋盘各级甜品（折算后）</div>
+                        {nextHint.boardProgress.map((bp) => {
+                          const hasCarry = bp.carriedUp > 0;
+                          const displayCount = bp.level === nextHint.parentDessert.level ? bp.effectiveCount : bp.effectiveCount;
+                          const displayNeeded = bp.level === nextHint.parentDessert.level ? 2 : 0;
+                          const isOk = bp.level === nextHint.parentDessert.level
+                            ? bp.effectiveCount >= 2
+                            : true;
+                          const percent = displayNeeded > 0
+                            ? Math.min(100, (displayCount / displayNeeded) * 100)
+                            : (hasCarry ? 100 : Math.min(100, bp.onBoard * 20));
+                          return (
+                            <div key={bp.level} className="next-unlock-breakdown-row">
+                              <span className="next-unlock-breakdown-emoji">{bp.emoji}</span>
+                              <span className="next-unlock-breakdown-name">{bp.name}</span>
+                              <span className="next-unlock-breakdown-bar-wrap">
+                                <span
+                                  className="next-unlock-breakdown-bar-fill"
+                                  style={{ width: `${percent}%` }}
+                                />
+                              </span>
+                              <span className={`next-unlock-breakdown-count ${isOk ? "next-unlock-ok" : "next-unlock-missing"}`}>
+                                {bp.level === nextHint.parentDessert.level
+                                  ? `${displayCount}/2`
+                                  : (hasCarry
+                                      ? `${bp.onBoard}→+${bp.carriedUp}`
+                                      : `${bp.onBoard}`)}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
