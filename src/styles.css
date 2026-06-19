@@ -243,6 +243,182 @@ button {
   cursor: grabbing;
 }
 
+.cell.merge-hint {
+  border-color: rgba(251, 191, 36, 0.7);
+  border-style: solid;
+  border-width: 3px;
+  animation: mergeHintPulse 1.5s ease-in-out infinite;
+  position: relative;
+  z-index: 2;
+}
+
+.cell.merge-hint-source {
+  animation: mergeHintPulseSource 1.5s ease-in-out infinite;
+}
+
+.cell.merge-hint-target {
+  animation: mergeHintPulseTarget 1.5s ease-in-out infinite;
+}
+
+.cell.merge-hint::before {
+  content: "✨";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 14px;
+  color: #fbbf24;
+  pointer-events: none;
+  animation: mergeHintArrow 1.5s ease-in-out infinite;
+}
+
+.cell.merge-hint-source::before {
+  content: "👆";
+}
+
+.cell.merge-hint-target::before {
+  content: "🎯";
+}
+
+.cell.merge-hint::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  pointer-events: none;
+  animation: mergeHintGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes mergeHintPulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.3),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(251, 191, 36, 0.5);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(251, 191, 36, 0.6),
+                0 0 40px rgba(251, 191, 36, 0.2),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(251, 191, 36, 0.9);
+    transform: scale(1.03);
+  }
+}
+
+@keyframes mergeHintPulseSource {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.4),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(251, 191, 36, 0.6);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(251, 191, 36, 0.7),
+                0 0 50px rgba(251, 191, 36, 0.3),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(251, 191, 36, 1);
+    transform: scale(1.05);
+  }
+}
+
+@keyframes mergeHintPulseTarget {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.4),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(34, 197, 94, 0.6);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(34, 197, 94, 0.7),
+                0 0 55px rgba(34, 197, 94, 0.3),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(34, 197, 94, 1);
+    transform: scale(1.06);
+  }
+}
+
+@keyframes mergeHintGlow {
+  0%, 100% {
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+  50% {
+    border-color: rgba(251, 191, 36, 0.6);
+  }
+}
+
+@keyframes mergeHintArrow {
+  0%, 100% { opacity: 0.6; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.cell.event-merge-hint {
+  border-color: rgba(168, 85, 247, 0.8);
+}
+
+.cell.event-merge-hint::after {
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+@keyframes eventMergeHintPulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.4),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(168, 85, 247, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(168, 85, 247, 0.7),
+                0 0 40px rgba(168, 85, 247, 0.3),
+                0 4px 12px rgba(0, 0, 0, 0.2);
+    border-color: rgba(168, 85, 247, 1);
+  }
+}
+
+.event-merge-hint-banner {
+  background: rgba(168, 85, 247, 0.15) !important;
+  border-color: rgba(168, 85, 247, 0.4) !important;
+  color: #c084fc !important;
+}
+
+.cell.pointer-dragging-source,
+.cell.pointer-drop-ok,
+.cell.pointer-drop-no,
+.cell.merge-success,
+.cell.merge-fail {
+  animation: none !important;
+}
+
+.cell.pointer-dragging-source.merge-hint::before,
+.cell.pointer-drop-ok.merge-hint::before,
+.cell.pointer-drop-no.merge-hint::before,
+.cell.merge-success.merge-hint::before,
+.cell.merge-fail.merge-hint::before {
+  display: none;
+}
+
+.cell.merge-hint-banner {
+  display: none;
+}
+
+.merge-hint-banner {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 8px 12px;
+  margin-top: 4px;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 13px;
+  font-weight: 700;
+  animation: mergeHintBannerIn 0.4s ease-out;
+  pointer-events: none;
+}
+
+@keyframes mergeHintBannerIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .cell.pointer-dragging-source {
   opacity: 0.3;
   transform: scale(0.92);
@@ -1124,6 +1300,17 @@ button {
   .dessert-level {
     font-size: 9px;
     padding: 1px 4px;
+  }
+
+  .merge-hint-banner {
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+
+  .cell.merge-hint::before {
+    font-size: 10px;
+    top: 1px;
+    right: 1px;
   }
 
   .hud strong {

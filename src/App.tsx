@@ -214,6 +214,34 @@ interface FeedbackState {
   timestamp: number;
 }
 
+function findNextMergeHint(currentBoard: (number | null)[]): { sourceIndex: number; targetIndex: number; level: number } | null {
+  const levelIndices = new Map<number, number[]>();
+  for (let i = 0; i < currentBoard.length; i++) {
+    const cell = currentBoard[i];
+    if (cell !== null && cell < DESSERTS.length) {
+      if (!levelIndices.has(cell)) {
+        levelIndices.set(cell, []);
+      }
+      levelIndices.get(cell)!.push(i);
+    }
+  }
+
+  const mergeableLevels = Array.from(levelIndices.entries())
+    .filter(([, indices]) => indices.length >= 2)
+    .map(([level]) => level)
+    .sort((a, b) => b - a);
+
+  if (mergeableLevels.length === 0) return null;
+
+  const bestLevel = mergeableLevels[0];
+  const indices = levelIndices.get(bestLevel)!;
+  return {
+    sourceIndex: indices[0],
+    targetIndex: indices[1],
+    level: bestLevel,
+  };
+}
+
 function createInitialBoard(): (number | null)[] {
   const initialBoard = Array(BOARD_SIZE).fill(null);
   for (let i = 0; i < INITIAL_SPAWN_COUNT; i++) {
@@ -905,6 +933,17 @@ function App(): React.ReactElement {
     timestamp: 0,
   });
 
+  const [mergeHint, setMergeHint] = useState<{ sourceIndex: number; targetIndex: number; level: number } | null>(
+    findNextMergeHint(initialState.board)
+  );
+  const mergeHintRef = useRef<{ sourceIndex: number; targetIndex: number; level: number } | null>(mergeHint);
+
+  const [eventMergeHint, setEventMergeHint] = useState<{ sourceIndex: number; targetIndex: number; level: number } | null>(null);
+  const eventMergeHintRef = useRef<{ sourceIndex: number; targetIndex: number; level: number } | null>(null);
+
+  const [showMergeHint, setShowMergeHint] = useState<boolean>(true);
+  const showMergeHintRef = useRef<boolean>(true);
+
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
   const [offlineReward, setOfflineReward] = useState<OfflineReward | null>(null);
 
@@ -954,6 +993,9 @@ function App(): React.ReactElement {
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
   spawnCooldownRef.current = spawnCooldown;
+  mergeHintRef.current = mergeHint;
+  eventMergeHintRef.current = eventMergeHint;
+  showMergeHintRef.current = showMergeHint;
   eventBoardRef.current = eventBoard;
   eventCoinsRef.current = eventCoins;
   eventStepsLeftRef.current = eventStepsLeft;
@@ -964,6 +1006,16 @@ function App(): React.ReactElement {
   const showToast = useCallback((message: string): void => {
     setToast(message);
     setTimeout(() => setToast(null), 1500);
+  }, []);
+
+  const recalcMergeHint = useCallback((newBoard: (number | null)[]): void => {
+    const hint = findNextMergeHint(newBoard);
+    setMergeHint(hint);
+  }, []);
+
+  const recalcEventMergeHint = useCallback((newBoard: (number | null)[]): void => {
+    const hint = findNextMergeHint(newBoard);
+    setEventMergeHint(hint);
   }, []);
 
   const dismissUnlockCelebration = useCallback((): void => {
@@ -999,6 +1051,16 @@ function App(): React.ReactElement {
     );
     setLastSaveTime(Date.now());
   }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders]);
+
+  useEffect(() => {
+    recalcMergeHint(board);
+  }, [board, recalcMergeHint]);
+
+  useEffect(() => {
+    if (eventMode && eventBoard.length > 0) {
+      recalcEventMergeHint(eventBoard);
+    }
+  }, [eventBoard, eventMode, recalcEventMergeHint]);
 
   useEffect(() => {
     if (autoSaveActive) {
@@ -1437,6 +1499,9 @@ function App(): React.ReactElement {
         const newBoard = [...eventBoardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
+
+        setEventMergeHint(null);
+
         setEventBoard(newBoard);
         setEventCoins((prev) => prev + coinReward);
 
@@ -1448,6 +1513,14 @@ function App(): React.ReactElement {
         }));
 
         showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
+
+        setTimeout(() => {
+          const nextHint = findNextMergeHint(newBoard);
+          if (nextHint) {
+            setEventMergeHint(nextHint);
+          }
+        }, 500);
+
         return true;
       }
     } else {
@@ -1516,7 +1589,16 @@ function App(): React.ReactElement {
         newBoard[currentIndex++] = level;
       }
     }
+    setEventMergeHint(null);
     setEventBoard(newBoard);
+    
+    setTimeout(() => {
+      const nextHint = findNextMergeHint(newBoard);
+      if (nextHint) {
+        setEventMergeHint(nextHint);
+      }
+    }, 300);
+    
     showToast("🧹 整理完成！");
   }, [consumeEventStep, showToast]);
 
@@ -1734,6 +1816,10 @@ function App(): React.ReactElement {
         const newBoard = [...boardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
+
+        setShowMergeHint(false);
+        showMergeHintRef.current = false;
+
         setBoard(newBoard);
         setCoins((prev: number) => prev + coinReward);
         triggerSuccessFeedback(targetIndex);
@@ -1759,6 +1845,15 @@ function App(): React.ReactElement {
         }
         
         advanceTutorialStep("merge");
+
+        setTimeout(() => {
+          const nextHint = findNextMergeHint(newBoard);
+          if (nextHint) {
+            setMergeHint(nextHint);
+            setShowMergeHint(true);
+            showMergeHintRef.current = true;
+          }
+        }, 700);
         
         return true;
       }
@@ -2037,7 +2132,19 @@ function App(): React.ReactElement {
         newBoard[currentIndex++] = level;
       }
     }
+    setShowMergeHint(false);
+    showMergeHintRef.current = false;
     setBoard(newBoard);
+    
+    setTimeout(() => {
+      const nextHint = findNextMergeHint(newBoard);
+      if (nextHint) {
+        setMergeHint(nextHint);
+        setShowMergeHint(true);
+        showMergeHintRef.current = true;
+      }
+    }, 300);
+    
     showToast("🧹 整理完成！相同等级甜品已聚拢");
   }, [showToast]);
 
@@ -2066,6 +2173,14 @@ function App(): React.ReactElement {
     const classes: string[] = ["cell"];
     classes.push(board[index] ? "has-dessert" : "empty");
 
+    if (mergeHint && showMergeHint && !drag.isDragging && feedback.type === null) {
+      if (index === mergeHint.sourceIndex) {
+        classes.push("merge-hint", "merge-hint-source");
+      } else if (index === mergeHint.targetIndex) {
+        classes.push("merge-hint", "merge-hint-target");
+      }
+    }
+
     if (drag.isDragging && drag.sourceIndex === index) {
       classes.push("pointer-dragging-source");
     }
@@ -2092,6 +2207,14 @@ function App(): React.ReactElement {
   const getEventCellClass = (index: number): string => {
     const classes: string[] = ["cell"];
     classes.push(eventBoard[index] ? "has-dessert" : "empty");
+
+    if (eventMergeHint && !drag.isDragging) {
+      if (index === eventMergeHint.sourceIndex) {
+        classes.push("merge-hint", "merge-hint-source", "event-merge-hint");
+      } else if (index === eventMergeHint.targetIndex) {
+        classes.push("merge-hint", "merge-hint-target", "event-merge-hint");
+      }
+    }
 
     if (drag.isDragging && drag.sourceIndex === index) {
       classes.push("pointer-dragging-source");
@@ -2868,6 +2991,11 @@ function App(): React.ReactElement {
               </div>
             );
           })}
+          {mergeHint && !drag.isDragging && feedback.type === null && (
+            <div className="merge-hint-banner">
+              ✨ 可合成：{DESSERTS[mergeHint.level - 1].emoji} {DESSERTS[mergeHint.level - 1].name} × 2 → {DESSERTS[Math.min(mergeHint.level, DESSERTS.length)].emoji} {DESSERTS[Math.min(mergeHint.level, DESSERTS.length)].name}
+            </div>
+          )}
         </div>
         ) : (
         <div
@@ -2896,6 +3024,11 @@ function App(): React.ReactElement {
               </div>
             );
           })}
+          {eventMergeHint && !drag.isDragging && (
+            <div className="merge-hint-banner event-merge-hint-banner">
+              ✨ 可合成：{DESSERTS[eventMergeHint.level - 1].emoji} {DESSERTS[eventMergeHint.level - 1].name} × 2 → {DESSERTS[Math.min(eventMergeHint.level, DESSERTS.length)].emoji} {DESSERTS[Math.min(eventMergeHint.level, DESSERTS.length)].name}
+            </div>
+          )}
         </div>
         )}
 
