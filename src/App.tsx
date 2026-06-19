@@ -51,6 +51,8 @@ const SPAWN_COST = 10;
 const SPAWN_COOLDOWN_SECONDS = 5;
 const SPAWN_MIN_LEVEL = 1;
 const SPAWN_MAX_LEVEL = 3;
+const INITIAL_COINS = 50;
+const INITIAL_SPAWN_COUNT = 6;
 let orderIdCounter = 0;
 
 interface GameState {
@@ -111,9 +113,14 @@ function loadGameState(): GameState {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
+      const loadedBoard = parsed.board || Array(BOARD_SIZE).fill(null);
+      const hasExistingBoard = loadedBoard.some((cell: number | null) => cell !== null);
+      const loadedCoins = typeof parsed.coins === "number" ? parsed.coins : -1;
+      const isNewGame = !hasExistingBoard && (loadedCoins <= 0);
+
       return {
-        board: parsed.board || Array(BOARD_SIZE).fill(null),
-        coins: parsed.coins || 0,
+        board: loadedBoard,
+        coins: isNewGame ? INITIAL_COINS : Math.max(loadedCoins, 0),
         maxLevel: parsed.maxLevel || 1,
         unlockedLevels: parsed.unlockedLevels || [1],
         unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
@@ -124,7 +131,7 @@ function loadGameState(): GameState {
   }
   return {
     board: Array(BOARD_SIZE).fill(null),
-    coins: 0,
+    coins: INITIAL_COINS,
     maxLevel: 1,
     unlockedLevels: [1],
     unlockTimes: { 1: new Date().toISOString() },
@@ -893,7 +900,7 @@ function App(): React.ReactElement {
   useEffect(() => {
     const hasAnyDessert = board.some((cell: number | null) => cell !== null);
     if (!hasAnyDessert) {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < INITIAL_SPAWN_COUNT; i++) {
         spawnDessert(1, true);
       }
     }
@@ -1112,7 +1119,9 @@ function App(): React.ReactElement {
 
         <aside className="side-panel">
           <h2>核心玩法</h2>
-          <p>拖动相同等级的甜品叠在一起即可合成更高级的甜品，获得金币奖励。不同等级的甜品无法合成。点击空格可快速生成1-3级甜品。</p>
+          <p>🎯 <strong>新手指引：</strong>先拖动两个相同等级的甜品叠在一起合成更高级甜品，可立即获得金币奖励！有了金币后再点击"生成甜品"按钮或空格继续生产。</p>
+          <p>✨ <strong>合成规则：</strong>相同等级甜品合并升级，不同等级无法合成。每次生成消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 甜品。</p>
+          <p>🧹 <strong>棋盘管理：</strong>棋盘满时请点击"自动整理"聚拢相同等级，方便后续拖拽合成。</p>
 
           <div className="orders-panel">
             <div className="orders-header">
@@ -1252,10 +1261,13 @@ function App(): React.ReactElement {
       <section className="result-panel">
         <h2>游戏说明</h2>
         <p>
-          🎮 <strong>玩法：</strong>拖拽相同等级的甜品到一起合成更高级甜品。每合成一次获得金币，等级越高金币越多。<br />
-          📋 <strong>订单：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
-          💾 <strong>存档：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
-          🎯 <strong>目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部甜品图鉴！
+          🎮 <strong>新手指引（必看）：</strong>开局免费送 {INITIAL_COINS} 金币和 {INITIAL_SPAWN_COUNT} 个糖果！先<strong>拖拽两个相同等级的甜品叠在一起</strong>合成更高级甜品，每次合成立即获得金币。有了金币就可以继续生成甜品啦~<br />
+          🍰 <strong>生成甜品：</strong>点击"生成甜品"按钮或棋盘空格，消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 的低等级甜品。<br />
+          ⭐ <strong>合成奖励：</strong>两个 Lv.N 甜品合成一个 Lv.N+1 甜品，获得 (N+1)×10 金币。等级越高奖励越丰厚！<br />
+          📋 <strong>订单系统：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
+          🧹 <strong>自动整理：</strong>棋盘满或杂乱时，点击"自动整理"将相同等级甜品聚拢，方便拖拽合成。<br />
+          💾 <strong>存档机制：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
+          🎯 <strong>终极目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部 10 种甜品图鉴！
         </p>
       </section>
     </main>
