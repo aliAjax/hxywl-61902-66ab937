@@ -113,19 +113,6 @@ function saveGameState(state: GameState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function mergeDuplicateLevels(items: OrderItem[]): OrderItem[] {
-  const levelMap = new Map<number, number>();
-  for (const item of items) {
-    const current = levelMap.get(item.level) || 0;
-    levelMap.set(item.level, current + item.count);
-  }
-  return Array.from(levelMap.entries()).map(([level, count]) => ({
-    level,
-    count,
-    collected: 0,
-  }));
-}
-
 function generateOrder(unlockedLevels: number[]): Order {
   const actualMaxItems = Math.min(MAX_ORDER_ITEMS, unlockedLevels.length);
   const actualMinItems = Math.min(MIN_ORDER_ITEMS, actualMaxItems);
