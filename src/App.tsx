@@ -1118,6 +1118,7 @@ function App(): React.ReactElement {
       } else {
         showToast("💰 暂时没有可领取的收益");
       }
+      advanceTutorialStep("offline");
     }
   };
 
@@ -1249,10 +1250,7 @@ function App(): React.ReactElement {
             {tutorial.currentStep === "offline" && !tutorial.hasClaimedOffline && (
               <div className="tutorial-hint">
                 <span className="tutorial-gesture">👆</span>
-                <p>点击「领取收益」按钮了解离线收益功能</p>
-                <button className="tutorial-next-btn" onClick={() => advanceTutorialStep("offline")}>
-                  我知道了 ✓
-                </button>
+                <p>点击上方高亮的「领取收益」按钮，了解离线收益功能</p>
               </div>
             )}
 
