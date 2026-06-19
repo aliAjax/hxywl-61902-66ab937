@@ -1,5 +1,18 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import "./styles.css";
+import {
+  SAVE_VERSION,
+  AUTO_SAVE_INTERVAL,
+  SaveFileGameData,
+  SaveFile,
+  ValidateResult,
+  validateSaveFile,
+  sanitizeSaveData,
+  createSaveFile,
+  parseSaveFromString,
+  downloadSaveFile,
+  readFileAsText,
+} from "./saveManager";
 
 const game = {
   "id": "hxywl-61902",
@@ -208,38 +221,125 @@ function createInitialBoard(): (number | null)[] {
   return initialBoard;
 }
 
-function loadGameState(): GameState {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      const loadedBoard = parsed.board || Array(BOARD_SIZE).fill(null);
-      const hasExistingBoard = loadedBoard.some((cell: number | null) => cell !== null);
-      const loadedCoins = typeof parsed.coins === "number" ? parsed.coins : -1;
-      const isNewGame = !hasExistingBoard && (loadedCoins <= 0);
-
-      return {
-        board: isNewGame ? createInitialBoard() : loadedBoard,
-        coins: isNewGame ? INITIAL_COINS : Math.max(loadedCoins, 0),
-        maxLevel: parsed.maxLevel || 1,
-        unlockedLevels: parsed.unlockedLevels || [1],
-        unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
-      };
-    }
-  } catch (e) {
-    console.error("Failed to load game state:", e);
-  }
+function createFallbackGameData(): SaveFileGameData {
   return {
     board: createInitialBoard(),
     coins: INITIAL_COINS,
     maxLevel: 1,
     unlockedLevels: [1],
     unlockTimes: { 1: new Date().toISOString() },
+    orders: [],
   };
 }
 
-function saveGameState(state: GameState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean } {
+  const fallback = createFallbackGameData();
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      
+      let gameData: SaveFileGameData;
+      if (parsed.data && typeof parsed.data === "object") {
+        gameData = parsed.data as SaveFileGameData;
+      } else {
+        gameData = {
+          board: parsed.board || Array(BOARD_SIZE).fill(null),
+          coins: typeof parsed.coins === "number" ? parsed.coins : -1,
+          maxLevel: parsed.maxLevel || 1,
+          unlockedLevels: parsed.unlockedLevels || [1],
+          unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
+          orders: parsed.orders || [],
+        };
+      }
+
+      const validateResult = validateSaveFile({
+        version: parsed.version || "0.9.0",
+        gameId: parsed.gameId || "hxywl-61902",
+        timestamp: parsed.timestamp || Date.now(),
+        data: gameData,
+      });
+
+      if (validateResult.isValid) {
+        const sanitized = sanitizeSaveData(gameData, fallback);
+        const loadedBoard = sanitized.board;
+        const hasExistingBoard = loadedBoard.some((cell) => cell !== null);
+        const loadedCoins = sanitized.coins;
+        const isNewGame = !hasExistingBoard && loadedCoins <= 0;
+
+        const finalOrders = sanitized.orders && sanitized.orders.length > 0
+          ? (sanitized.orders as Order[])
+          : generateOrders(sanitized.unlockedLevels);
+
+        return {
+          state: {
+            board: isNewGame ? createInitialBoard() : loadedBoard,
+            coins: isNewGame ? INITIAL_COINS : Math.max(loadedCoins, 0),
+            maxLevel: sanitized.maxLevel,
+            unlockedLevels: sanitized.unlockedLevels,
+            unlockTimes: sanitized.unlockTimes,
+          },
+          orders: finalOrders,
+          loadedFromSave: true,
+        };
+      } else {
+        console.warn("存档校验存在问题:", validateResult.errors, validateResult.warnings);
+        try {
+          const sanitized = sanitizeSaveData(gameData, fallback);
+          return {
+            state: {
+              board: sanitized.board,
+              coins: Math.max(sanitized.coins, 0),
+              maxLevel: sanitized.maxLevel,
+              unlockedLevels: sanitized.unlockedLevels,
+              unlockTimes: sanitized.unlockTimes,
+            },
+            orders: (sanitized.orders as Order[]) && sanitized.orders.length > 0
+              ? (sanitized.orders as Order[])
+              : generateOrders(sanitized.unlockedLevels),
+            loadedFromSave: true,
+          };
+        } catch (innerE) {
+          console.error("修复损坏存档失败，使用新存档:", innerE);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("加载存档失败，使用默认初始值:", e);
+  }
+  return {
+    state: {
+      board: createInitialBoard(),
+      coins: INITIAL_COINS,
+      maxLevel: 1,
+      unlockedLevels: [1],
+      unlockTimes: { 1: new Date().toISOString() },
+    },
+    orders: generateOrders([1]),
+    loadedFromSave: false,
+  };
+}
+
+function saveGameState(state: GameState, orders: Order[]): void {
+  try {
+    const gameData: SaveFileGameData = {
+      board: state.board,
+      coins: state.coins,
+      maxLevel: state.maxLevel,
+      unlockedLevels: state.unlockedLevels,
+      unlockTimes: state.unlockTimes,
+      orders: orders.map(o => ({
+        id: o.id,
+        reward: o.reward,
+        completed: o.completed,
+        items: o.items.map(it => ({ ...it })),
+      })),
+    };
+    const saveFile = createSaveFile(gameData, false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(saveFile));
+  } catch (e) {
+    console.error("保存存档失败:", e);
+  }
 }
 
 function loadOfflineData(): OfflineData | null {
@@ -570,14 +670,15 @@ function calculateEventResult(
 }
 
 function App(): React.ReactElement {
-  const initialState = loadGameState();
-  const initialTutorial = loadTutorialState();
+  const initialLoaded = loadGameState();
+  const initialState = initialLoaded.state;
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
   const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
   const [unlockTimes, setUnlockTimes] = useState<{ [key: number]: string }>(initialState.unlockTimes);
-  const [orders, setOrders] = useState<Order[]>(generateOrders(initialState.unlockedLevels));
+  const [orders, setOrders] = useState<Order[]>(initialLoaded.orders);
+  const initialTutorial = loadTutorialState();
   const [toast, setToast] = useState<string | null>(null);
   const [selectedDessert, setSelectedDessert] = useState<number | null>(null);
   const [spawnCooldown, setSpawnCooldown] = useState<number>(0);
@@ -626,11 +727,26 @@ function App(): React.ReactElement {
   const tutorialRef = useRef<TutorialState>(tutorial);
   tutorialRef.current = tutorial;
 
+  const [showSavePanel, setShowSavePanel] = useState<boolean>(false);
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
+  const [showImportResult, setShowImportResult] = useState<{
+    type: "success" | "error" | "warning";
+    title: string;
+    message: string;
+    details: string[];
+  } | null>(null);
+  const [lastSaveTime, setLastSaveTime] = useState<number>(Date.now());
+  const [autoSaveActive, setAutoSaveActive] = useState<boolean>(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
   const unlockedLevelsRef = useRef<number[]>(unlockedLevels);
   const unlockTimesRef = useRef<{ [key: number]: string }>(unlockTimes);
+  const ordersRef = useRef<Order[]>(orders);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = useRef<DragState>(drag);
   const hoverRef = useRef<number | null>(null);
@@ -647,6 +763,7 @@ function App(): React.ReactElement {
   maxLevelRef.current = maxLevel;
   unlockedLevelsRef.current = unlockedLevels;
   unlockTimesRef.current = unlockTimes;
+  ordersRef.current = orders;
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
   spawnCooldownRef.current = spawnCooldown;
@@ -662,15 +779,230 @@ function App(): React.ReactElement {
     setTimeout(() => setToast(null), 1500);
   }, []);
 
+  const doManualSave = useCallback((): void => {
+    saveGameState(
+      {
+        board: boardRef.current,
+        coins: coinsRef.current,
+        maxLevel: maxLevelRef.current,
+        unlockedLevels: unlockedLevelsRef.current,
+        unlockTimes: unlockTimesRef.current,
+      },
+      ordersRef.current
+    );
+    setLastSaveTime(Date.now());
+  }, []);
+
   useEffect(() => {
-    saveGameState({
-      board,
-      coins,
-      maxLevel,
-      unlockedLevels,
-      unlockTimes,
-    });
-  }, [board, coins, maxLevel, unlockedLevels, unlockTimes]);
+    saveGameState(
+      {
+        board,
+        coins,
+        maxLevel,
+        unlockedLevels,
+        unlockTimes,
+      },
+      orders
+    );
+    setLastSaveTime(Date.now());
+  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders]);
+
+  useEffect(() => {
+    if (autoSaveActive) {
+      autoSaveTimerRef.current = setInterval(() => {
+        doManualSave();
+      }, AUTO_SAVE_INTERVAL);
+    }
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearInterval(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [autoSaveActive, doManualSave]);
+
+  const handleExportSave = useCallback((): void => {
+    try {
+      const gameData: SaveFileGameData = {
+        board: boardRef.current,
+        coins: coinsRef.current,
+        maxLevel: maxLevelRef.current,
+        unlockedLevels: unlockedLevelsRef.current,
+        unlockTimes: unlockTimesRef.current,
+        orders: ordersRef.current.map(o => ({
+          id: o.id,
+          reward: o.reward,
+          completed: o.completed,
+          items: o.items.map(it => ({ ...it })),
+        })),
+      };
+      const saveFile = createSaveFile(gameData, true);
+      downloadSaveFile(saveFile);
+      showToast("💾 存档已导出到本地文件");
+    } catch (e) {
+      console.error("导出存档失败:", e);
+      showToast("❌ 导出存档失败，请重试");
+    }
+    setShowSavePanel(false);
+  }, [showToast]);
+
+  const handleImportFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    try {
+      const readResult = await readFileAsText(file);
+      if (!readResult.success) {
+        setShowImportResult({
+          type: "error",
+          title: "文件读取失败",
+          message: readResult.error,
+          details: [],
+        });
+        return;
+      }
+
+      const parseResult = parseSaveFromString(readResult.content);
+      if (!parseResult.success || !parseResult.save) {
+        setShowImportResult({
+          type: "error",
+          title: "存档格式错误",
+          message: parseResult.error || "文件内容无法解析为有效的 JSON",
+          details: [],
+        });
+        return;
+      }
+
+      const save = parseResult.save;
+      const validation = validateSaveFile(save);
+
+      if (validation.isValid) {
+        applyImportedSave(save, validation);
+      } else if (validation.errors.length > 0) {
+        setShowImportResult({
+          type: "error",
+          title: "存档校验失败",
+          message: `检测到 ${validation.errors.length} 个错误，无法导入此存档。`,
+          details: validation.errors,
+        });
+      } else {
+        applyImportedSave(save, validation);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setShowImportResult({
+        type: "error",
+        title: "导入过程发生错误",
+        message: msg,
+        details: [],
+      });
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  }, [showToast]);
+
+  const applyImportedSave = useCallback((save: SaveFile, validation: ValidateResult): void => {
+    try {
+      const fallback = {
+        board: boardRef.current,
+        coins: coinsRef.current,
+        maxLevel: maxLevelRef.current,
+        unlockedLevels: unlockedLevelsRef.current,
+        unlockTimes: unlockTimesRef.current,
+        orders: ordersRef.current,
+      };
+
+      const sanitized = sanitizeSaveData(save.data, fallback);
+      const newOrders: Order[] = sanitized.orders.length > 0
+        ? (sanitized.orders as Order[])
+        : generateOrders(sanitized.unlockedLevels);
+
+      setBoard(sanitized.board);
+      setCoins(Math.max(sanitized.coins, 0));
+      setMaxLevel(sanitized.maxLevel);
+      setUnlockedLevels(sanitized.unlockedLevels);
+      setUnlockTimes(sanitized.unlockTimes);
+      setOrders(newOrders);
+
+      doManualSave();
+
+      const saveDate = new Date(save.timestamp).toLocaleString('zh-CN');
+      if (validation.warnings.length > 0) {
+        setShowImportResult({
+          type: "warning",
+          title: "导入成功（存在警告）",
+          message: `存档已恢复。保存时间：${saveDate}\n但检测到 ${validation.warnings.length} 个非关键问题：`,
+          details: validation.warnings,
+        });
+      } else {
+        setShowImportResult({
+          type: "success",
+          title: "存档导入成功！",
+          message: `进度已成功恢复到 ${saveDate}。\n金币：${sanitized.coins}，最高等级：Lv.${sanitized.maxLevel}，图鉴：${sanitized.unlockedLevels.length}/${DESSERTS.length}`,
+          details: [],
+        });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setShowImportResult({
+        type: "error",
+        title: "应用存档失败",
+        message: `发生错误: ${msg}。当前进度已保留。`,
+        details: [],
+      });
+    }
+    setShowImportModal(false);
+  }, [doManualSave, showToast]);
+
+  const handleResetProgress = useCallback((): void => {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(OFFLINE_DATA_KEY);
+      localStorage.removeItem(TUTORIAL_KEY);
+
+      const newBoard = createInitialBoard();
+      const newUnlockedLevels = [1];
+      const newUnlockTimes = { 1: new Date().toISOString() };
+
+      setBoard(newBoard);
+      setCoins(INITIAL_COINS);
+      setMaxLevel(1);
+      setUnlockedLevels(newUnlockedLevels);
+      setUnlockTimes(newUnlockTimes);
+      setOrders(generateOrders(newUnlockedLevels));
+      setTutorial({
+        currentStep: "welcome",
+        completedSteps: [],
+        hasSpawned: false,
+        hasMerged: false,
+        hasCompletedOrder: false,
+        hasViewedCollection: false,
+        hasClaimedOffline: false,
+      });
+      setShowTutorial(true);
+      setLastSaveTime(Date.now());
+
+      showToast("🔄 进度已重置，开始新游戏！");
+    } catch (e) {
+      console.error("重置进度失败:", e);
+      showToast("❌ 重置进度失败，请重试");
+    }
+    setShowResetConfirm(false);
+    setShowSavePanel(false);
+  }, [showToast]);
+
+  const formatLastSaveTime = useCallback((): string => {
+    const diff = Date.now() - lastSaveTime;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    if (hours > 0) return `${hours}小时前`;
+    if (minutes > 0) return `${minutes}分钟前`;
+    if (seconds < 5) return "刚刚";
+    return `${seconds}秒前`;
+  }, [lastSaveTime]);
 
   useEffect(() => {
     saveTutorialState(tutorial);
@@ -1625,6 +1957,178 @@ function App(): React.ReactElement {
     <main className={mainClass}>
       {toast && <div className="toast">{toast}</div>}
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={handleImportFileSelect}
+      />
+
+      {showImportResult && (
+        <div className="modal-overlay" onClick={() => setShowImportResult(null)}>
+          <div className="modal-content import-result-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowImportResult(null)}>×</button>
+            <div className={`import-result-icon import-result-${showImportResult.type}`}>
+              {showImportResult.type === "success" ? "✅" : showImportResult.type === "warning" ? "⚠️" : "❌"}
+            </div>
+            <h2 className="import-result-title">{showImportResult.title}</h2>
+            <p className="import-result-message">{showImportResult.message}</p>
+            {showImportResult.details && showImportResult.details.length > 0 && (
+              <div className="import-result-details">
+                <ul>
+                  {showImportResult.details.map((detail, idx) => (
+                    <li key={idx}>{detail}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <button
+              className="import-result-close-btn" onClick={() => setShowImportResult(null)}>
+              确定
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showSavePanel && (
+        <div className="modal-overlay" onClick={() => setShowSavePanel(false)}>
+          <div className="modal-content save-panel-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowSavePanel(false)}>×</button>
+            <div className="save-panel-icon">💾</div>
+            <h2 className="save-panel-title">存档管理</h2>
+            <div className="save-panel-info">
+              <div className="info-row">
+              <span className="info-label">当前存档版本</span>
+                <span className="info-value">v{SAVE_VERSION}</span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">上次保存</span>
+                <span className="info-value">{formatLastSaveTime()}</span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">自动保存</span>
+                <span className={`info-value ${autoSaveActive ? "text-success" : "text-warning"}`}>
+                  {autoSaveActive ? "已开启" : "已暂停"}
+                </span>
+              </div>
+            </div>
+            <div className="save-panel-actions">
+              <button
+                className="save-action-btn save-action-save"
+                onClick={() => { doManualSave(); showToast("💾 已手动保存进度"); }}
+              >
+                <span className="save-action-icon">📝</span>
+                <span>手动保存</span>
+              </button>
+              <button
+                className="save-action-btn save-action-export"
+                onClick={handleExportSave}
+              >
+                <span className="save-action-icon">📤</span>
+                <span>导出存档</span>
+              </button>
+              <button
+                className="save-action-btn save-action-import"
+                onClick={() => {
+                  setShowImportModal(true);
+                  setShowSavePanel(false);
+                }}
+              >
+                <span className="save-action-icon">📥</span>
+                <span>导入存档</span>
+              </button>
+              <button
+                className={`save-action-btn save-action-auto ${autoSaveActive ? 'is-active' : ''}`}
+                onClick={() => setAutoSaveActive(!autoSaveActive)}
+              >
+                <span className="save-action-icon">
+                  {autoSaveActive ? "⏸️" : "▶️"}
+                </span>
+                <span>{autoSaveActive ? "暂停自动保存" : "恢复自动保存"}</span>
+              </button>
+              <button
+                className="save-action-btn save-action-reset"
+                onClick={() => setShowResetConfirm(true)}
+              >
+                <span className="save-action-icon">🔄</span>
+                <span>重置进度</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => setShowImportModal(false)}>
+          <div className="modal-content import-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowImportModal(false)}>×</button>
+            <div className="import-modal-icon">📥</div>
+            <h2 className="import-modal-title">导入存档</h2>
+            <p className="import-modal-desc">
+              选择之前导出的存档文件（.json格式）进行恢复。<br />
+              <strong>注意：导入后当前进度将被覆盖，建议先导出备份。</strong>
+            </p>
+            <div className="import-requirements">
+              <h4>✅ 合法存档要求：</h4>
+              <ul>
+                <li>存档版本需与当前游戏版本兼容</li>
+                <li>金币数量为非负整数</li>
+                <li>棋盘大小为 5×5 共 25 格，格内等级在 1-10 或为空</li>
+                <li>订单和图鉴数据结构完整，等级范围有效</li>
+              </ul>
+            </div>
+            <input
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              id="save-file-input"
+              onChange={handleImportFileSelect}
+            />
+            <label htmlFor="save-file-input" className="import-file-btn">
+              <span className="import-file-icon">📁</span>
+              <span>选择存档文件</span>
+            </label>
+            <p className="import-modal-hint">损坏的存档将被拒绝，当前进度将保留</p>
+          </div>
+        </div>
+      )}
+
+      {showResetConfirm && (
+        <div className="modal-overlay" onClick={() => setShowResetConfirm(false)}>
+          <div className="modal-content reset-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowResetConfirm(false)}>×</button>
+            <div className="reset-confirm-icon">⚠️</div>
+            <h2 className="reset-confirm-title">确认重置进度？</h2>
+            <div className="reset-confirm-warning">
+              <p>此操作将<strong>永久删除</strong>以下所有数据：</p>
+              <ul>
+                <li>💰 当前金币</li>
+                <li>🎮 棋盘进度</li>
+                <li>📖 甜品图鉴解锁状态</li>
+                <li>📋 订单进度</li>
+                <li>🌙 离线收益记录</li>
+                <li>📚 新手引导进度</li>
+              </ul>
+            </div>
+            <div className="reset-confirm-buttons">
+              <button
+                className="reset-cancel-btn"
+                onClick={() => setShowResetConfirm(false)}
+              >
+                取消
+              </button>
+              <button
+                className="reset-confirm-btn"
+                onClick={handleResetProgress}
+              >
+                确认重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showTutorial && currentTutorialStep && tutorial.currentStep !== "completed" && (
         <div className="tutorial-overlay">
           <div className="tutorial-dialog" onClick={(e) => e.stopPropagation()}>
@@ -1952,6 +2456,12 @@ function App(): React.ReactElement {
             <article className="event-entry-article" onClick={() => setShowEventEntry(true)}>
               <small>🎯 限时活动</small>
               <strong className="event-entry-text">点击进入 →</strong>
+            </article>
+            <article className="save-entry-article" onClick={() => setShowSavePanel(true)}>
+              <small>💾 存档管理</small>
+              <strong className="save-entry-text">
+                {autoSaveActive ? `保存于${formatLastSaveTime()}` : "自动保存已暂停"}
+              </strong>
             </article>
           </>
         ) : (
