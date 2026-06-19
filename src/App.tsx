@@ -41,6 +41,10 @@ const DESSERTS = [
 const BOARD_SIZE = 25;
 const STORAGE_KEY = game.id + "-save";
 const POINTER_MOVE_THRESHOLD = 5;
+const MAX_ORDERS = 3;
+const MIN_ORDER_ITEMS = 1;
+const MAX_ORDER_ITEMS = 3;
+let orderIdCounter = 0;
 
 interface GameState {
   board: (number | null)[];
@@ -49,10 +53,17 @@ interface GameState {
   unlockedLevels: number[];
 }
 
-interface Order {
+interface OrderItem {
   level: number;
+  count: number;
+  collected: number;
+}
+
+interface Order {
+  id: number;
+  items: OrderItem[];
   reward: number;
-  filled: boolean;
+  completed: boolean;
 }
 
 interface DragState {
@@ -99,17 +110,80 @@ function saveGameState(state: GameState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function generateOrder(unlockedLevels: number[]): Order {
+  const numItems = Math.floor(Math.random() * (MAX_ORDER_ITEMS - MIN_ORDER_ITEMS + 1)) + MIN_ORDER_ITEMS;
+  const items: OrderItem[] = [];
+  let totalReward = 0;
+  const usedLevels = new Set<number>();
+
+  for (let i = 0; i < numItems; i++) {
+    let level: number;
+    do {
+      level = unlockedLevels[Math.floor(Math.random() * unlockedLevels.length)];
+    } while (usedLevels.has(level) && usedLevels.size < unlockedLevels.length);
+    
+    usedLevels.add(level);
+    const count = Math.floor(Math.random() * 2) + 1;
+    items.push({ level, count, collected: 0 });
+    totalReward += level * count * 15;
+  }
+
+  return {
+    id: ++orderIdCounter,
+    items,
+    reward: totalReward,
+    completed: false,
+  };
+}
+
+function generateOrders(unlockedLevels: number[], count: number = MAX_ORDERS): Order[] {
+  if (unlockedLevels.length === 0) return [];
+  const orders: Order[] = [];
+  for (let i = 0; i < count; i++) {
+    orders.push(generateOrder(unlockedLevels));
+  }
+  return orders;
+}
+
+function countDessertsOnBoard(board: (number | null)[], level: number): number {
+  return board.filter(cell => cell === level).length;
+}
+
+function removeDessertsFromBoard(board: (number | null)[], level: number, count: number): (number | null)[] {
+  const newBoard = [...board];
+  let removed = 0;
+  for (let i = 0; i < newBoard.length && removed < count; i++) {
+    if (newBoard[i] === level) {
+      newBoard[i] = null;
+      removed++;
+    }
+  }
+  return newBoard;
+}
+
+function canSubmitOrder(board: (number | null)[], order: Order): boolean {
+  return order.items.every(item => countDessertsOnBoard(board, item.level) >= item.count);
+}
+
+function submitOrder(board: (number | null)[], order: Order): { newBoard: (number | null)[]; success: boolean } {
+  if (!canSubmitOrder(board, order)) {
+    return { newBoard: board, success: false };
+  }
+
+  let newBoard = [...board];
+  for (const item of order.items) {
+    newBoard = removeDessertsFromBoard(newBoard, item.level, item.count);
+  }
+  return { newBoard, success: true };
+}
+
 function App(): React.ReactElement {
   const initialState = loadGameState();
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
   const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
-  const [orders, setOrders] = useState<Order[]>([
-    { level: 3, reward: 50, filled: false },
-    { level: 4, reward: 100, filled: false },
-    { level: 5, reward: 200, filled: false },
-  ]);
+  const [orders, setOrders] = useState<Order[]>(generateOrders(initialState.unlockedLevels));
   const [toast, setToast] = useState<string | null>(null);
 
   const [drag, setDrag] = useState<DragState>({
@@ -261,15 +335,6 @@ function App(): React.ReactElement {
         if (!unlockedLevelsRef.current.includes(newLevel)) {
           setUnlockedLevels((prev: number[]) => [...prev, newLevel].sort((a: number, b: number) => a - b));
         }
-
-        setOrders((prev: Order[]) => prev.map((order: Order) => {
-          if (!order.filled && newLevel >= order.level) {
-            setCoins((c: number) => c + order.reward);
-            setTimeout(() => showToast(`📦 订单完成！+${order.reward}金币`), 1200);
-            return { ...order, filled: true };
-          }
-          return order;
-        }));
         return true;
       }
     } else {
@@ -443,6 +508,51 @@ function App(): React.ReactElement {
     };
   }, [getCellIndexFromPoint, performMerge, showToast]);
 
+  const handleSubmitOrder = useCallback((order: Order): void => {
+    if (order.completed) {
+      showToast("该订单已完成！");
+      return;
+    }
+
+    if (!canSubmitOrder(boardRef.current, order)) {
+      showToast("❌ 棋盘中的甜品不足，无法提交！");
+      return;
+    }
+
+    const { newBoard, success } = submitOrder(boardRef.current, order);
+    if (!success) {
+      showToast("❌ 提交失败！");
+      return;
+    }
+
+    setBoard(newBoard);
+    setCoins((prev: number) => prev + order.reward);
+    setOrders((prev: Order[]) =>
+      prev.map((o: Order) =>
+        o.id === order.id ? { ...o, completed: true } : o
+      )
+    );
+
+    showToast(`🎉 订单完成！+${order.reward}金币`);
+
+    setTimeout(() => {
+      setOrders((prev: Order[]) => {
+        const remaining = prev.filter((o: Order) => !o.completed);
+        const newOrders = generateOrders(unlockedLevelsRef.current, MAX_ORDERS - remaining.length);
+        return [...remaining, ...newOrders];
+      });
+    }, 1500);
+  }, [showToast]);
+
+  const handleRefreshOrders = useCallback((): void => {
+    if (unlockedLevelsRef.current.length === 0) {
+      showToast("❌ 没有解锁的甜品，无法生成订单！");
+      return;
+    }
+    setOrders(generateOrders(unlockedLevelsRef.current));
+    showToast("📋 订单已刷新！");
+  }, [showToast]);
+
   const handleAction = (action: string): void => {
     if (action === "生成甜品") {
       spawnDessert();
@@ -462,7 +572,7 @@ function App(): React.ReactElement {
     }
   };
 
-  const filledOrders = orders.filter((o: Order) => o.filled).length;
+  const completedOrders = orders.filter((o: Order) => o.completed).length;
 
   useEffect(() => {
     const hasAnyDessert = board.some((cell: number | null) => cell !== null);
@@ -543,7 +653,7 @@ function App(): React.ReactElement {
             <small>{stat}</small>
             <strong>
               {index === 0 ? coins :
-               index === 1 ? `${filledOrders}/${orders.length}` :
+               index === 1 ? `${completedOrders}/${orders.length}` :
                index === 2 ? `${unlockedLevels.length}/${DESSERTS.length}` :
                `${maxLevel}级 ${DESSERTS[Math.min(maxLevel - 1, DESSERTS.length - 1)]?.emoji}`}
             </strong>
@@ -585,13 +695,56 @@ function App(): React.ReactElement {
           <p>拖动相同等级的甜品叠在一起即可合成更高级的甜品，获得金币奖励。不同等级的甜品无法合成。点击空格可快速生成1-3级甜品。</p>
 
           <div className="orders-panel">
-            <h3>📋 当前订单</h3>
-            {orders.map((order: Order, idx: number) => (
-              <div key={idx} className={`order-item ${order.filled ? "filled" : ""}`}>
-                <span>{order.filled ? "✅" : DESSERTS[order.level - 1]?.emoji} 合成 {order.level} 级甜品</span>
-                <span className="reward">+{order.reward}💰</span>
+            <div className="orders-header">
+              <h3>📋 当前订单</h3>
+              <button className="refresh-btn" onClick={handleRefreshOrders}>🔄 刷新</button>
+            </div>
+            {orders.length === 0 ? (
+              <div className="empty-orders">
+                <p>🎯 暂无可用订单</p>
+                <p className="empty-orders-hint">合成更多甜品解锁新订单吧！</p>
               </div>
-            ))}
+            ) : (
+              orders.map((order: Order) => (
+                <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
+                  <div className="order-items">
+                    {order.items.map((item: OrderItem, idx: number) => {
+                      const dessert = DESSERTS[item.level - 1];
+                      const available = countDessertsOnBoard(board, item.level);
+                      const hasEnough = available >= item.count;
+                      return (
+                        <div key={idx} className={`order-item-row ${hasEnough ? "available" : "unavailable"}`}>
+                          <span className="order-dessert">
+                            <span className="order-emoji">{dessert?.emoji}</span>
+                            <span className="order-name">{dessert?.name}</span>
+                          </span>
+                          <span className="order-count">
+                            <span className={hasEnough ? "count-ok" : "count-missing"}>
+                              {available}/{item.count}
+                            </span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="order-footer">
+                    <span className="order-reward">+{order.reward}💰</span>
+                    {!order.completed && (
+                      <button
+                        className={`submit-btn ${canSubmitOrder(board, order) ? "can-submit" : "cannot-submit"}`}
+                        onClick={() => handleSubmitOrder(order)}
+                        disabled={!canSubmitOrder(board, order)}
+                      >
+                        {canSubmitOrder(board, order) ? "✅ 提交" : "❌ 材料不足"}
+                      </button>
+                    )}
+                    {order.completed && (
+                      <span className="completed-badge">🎉 已完成</span>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
           <div className="collection-panel">
@@ -621,7 +774,8 @@ function App(): React.ReactElement {
         <h2>游戏说明</h2>
         <p>
           🎮 <strong>玩法：</strong>拖拽相同等级的甜品到一起合成更高级甜品。每合成一次获得金币，等级越高金币越多。<br />
-          💾 <strong>存档：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
+          � <strong>订单：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
+          �💾 <strong>存档：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
           🎯 <strong>目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部甜品图鉴！
         </p>
       </section>
