@@ -110,10 +110,12 @@ export function validateSaveFile(save: unknown): ValidateResult {
 
   if (data.coins === undefined || typeof data.coins !== "number" || isNaN(data.coins)) {
     errors.push("金币数据缺失或格式错误");
+  } else if (!Number.isInteger(data.coins)) {
+    errors.push("金币必须为整数，不能包含小数");
+  } else if (!Number.isSafeInteger(data.coins)) {
+    errors.push("金币数值超出安全整数范围");
   } else if (data.coins < 0) {
     errors.push("金币数量不能为负数");
-  } else if (!Number.isFinite(data.coins)) {
-    errors.push("金币数量非法");
   } else if (data.coins > Number.MAX_SAFE_INTEGER / 100) {
     warnings.push("金币数量异常庞大");
   }
@@ -193,53 +195,103 @@ export function validateSaveFile(save: unknown): ValidateResult {
     }
   }
 
-  if (data.orders !== undefined) {
-    if (!Array.isArray(data.orders)) {
-      errors.push("订单数据格式错误");
-    } else {
-      for (let i = 0; i < data.orders.length; i++) {
-        const order = data.orders[i] as Record<string, unknown>;
-        if (order && typeof order === "object") {
-          if (order.id !== undefined && (typeof order.id !== "number" || !Number.isInteger(order.id))) {
-            errors.push(`第${i + 1}个订单ID格式错误`);
+  if (data.orders === undefined) {
+    errors.push("存档缺少订单数据");
+  } else if (!Array.isArray(data.orders)) {
+    errors.push("订单数据格式错误，应为数组");
+  } else {
+    const orderIdSet = new Set<number>();
+    for (let i = 0; i < data.orders.length; i++) {
+      const order = data.orders[i] as Record<string, unknown>;
+      const orderPrefix = `第${i + 1}个订单`;
+
+      if (!order || typeof order !== "object") {
+        errors.push(`${orderPrefix}不是有效的对象`);
+        continue;
+      }
+
+      if (order.id === undefined) {
+        errors.push(`${orderPrefix}缺少必填字段 id`);
+      } else if (typeof order.id !== "number" || !Number.isInteger(order.id)) {
+        errors.push(`${orderPrefix}的 id 必须为整数`);
+      } else if (!Number.isSafeInteger(order.id)) {
+        errors.push(`${orderPrefix}的 id 超出安全整数范围`);
+      } else {
+        if (orderIdSet.has(order.id)) {
+          errors.push(`${orderPrefix}的 id (${order.id}) 与其他订单重复`);
+        }
+        orderIdSet.add(order.id);
+      }
+
+      if (order.completed === undefined) {
+        errors.push(`${orderPrefix}缺少必填字段 completed`);
+      } else if (typeof order.completed !== "boolean") {
+        errors.push(`${orderPrefix}的 completed 必须为布尔值`);
+      }
+
+      if (order.reward === undefined) {
+        errors.push(`${orderPrefix}缺少必填字段 reward`);
+      } else if (typeof order.reward !== "number" || isNaN(order.reward)) {
+        errors.push(`${orderPrefix}的 reward 格式错误`);
+      } else if (!Number.isInteger(order.reward)) {
+        errors.push(`${orderPrefix}的 reward 必须为整数`);
+      } else if (!Number.isSafeInteger(order.reward)) {
+        errors.push(`${orderPrefix}的 reward 超出安全整数范围`);
+      } else if (order.reward < 0) {
+        errors.push(`${orderPrefix}的 reward 不能为负数`);
+      }
+
+      if (order.items === undefined) {
+        errors.push(`${orderPrefix}缺少必填字段 items`);
+      } else if (!Array.isArray(order.items)) {
+        errors.push(`${orderPrefix}的 items 必须为数组`);
+      } else if (order.items.length === 0) {
+        errors.push(`${orderPrefix}的 items 不能为空，至少需要1项物品`);
+      } else {
+        for (let j = 0; j < order.items.length; j++) {
+          const item = order.items[j] as Record<string, unknown>;
+          const itemPrefix = `${orderPrefix}第${j + 1}项`;
+
+          if (!item || typeof item !== "object") {
+            errors.push(`${itemPrefix}不是有效的对象`);
+            continue;
           }
-          if (order.reward !== undefined) {
-            if (typeof order.reward !== "number" || isNaN(order.reward)) {
-              errors.push(`第${i + 1}个订单奖励格式错误`);
-            } else if (order.reward < 0) {
-              errors.push(`第${i + 1}个订单奖励不能为负数`);
-            }
+
+          if (item.level === undefined) {
+            errors.push(`${itemPrefix}缺少必填字段 level`);
+          } else if (typeof item.level !== "number" || !Number.isInteger(item.level)) {
+            errors.push(`${itemPrefix}的 level 必须为整数`);
+          } else if (!VALID_LEVELS.includes(item.level)) {
+            errors.push(`${itemPrefix}的 level (${item.level}) 超出有效范围 1-10`);
           }
-          if (order.completed !== undefined && typeof order.completed !== "boolean") {
-            errors.push(`第${i + 1}个订单完成状态格式错误`);
+
+          if (item.count === undefined) {
+            errors.push(`${itemPrefix}缺少必填字段 count`);
+          } else if (typeof item.count !== "number" || !Number.isInteger(item.count)) {
+            errors.push(`${itemPrefix}的 count 必须为整数`);
+          } else if (!Number.isSafeInteger(item.count)) {
+            errors.push(`${itemPrefix}的 count 超出安全整数范围`);
+          } else if (item.count < 1) {
+            errors.push(`${itemPrefix}的 count 不能小于1`);
           }
-          if (order.items !== undefined) {
-            if (!Array.isArray(order.items)) {
-              errors.push(`第${i + 1}个订单项格式错误`);
-            } else {
-              for (let j = 0; j < order.items.length; j++) {
-                const item = order.items[j] as Record<string, unknown>;
-                if (item && typeof item === "object") {
-                  if (item.level === undefined || typeof item.level !== "number" || !Number.isInteger(item.level)) {
-                    errors.push(`第${i + 1}个订单第${j + 1}项等级格式错误`);
-                  } else if (!VALID_LEVELS.includes(item.level)) {
-                    errors.push(`第${i + 1}个订单第${j + 1}项等级 ${item.level} 超出范围`);
-                  }
-                  if (item.count !== undefined) {
-                    if (typeof item.count !== "number" || !Number.isInteger(item.count)) {
-                      errors.push(`第${i + 1}个订单第${j + 1}项数量格式错误`);
-                    } else if (item.count < 1) {
-                      errors.push(`第${i + 1}个订单第${j + 1}项数量不能小于1`);
-                    }
-                  }
-                  if (item.collected !== undefined) {
-                    if (typeof item.collected !== "number" || !Number.isInteger(item.collected)) {
-                      warnings.push(`第${i + 1}个订单第${j + 1}项已收集数量格式异常`);
-                    }
-                  }
-                }
-              }
-            }
+
+          if (item.collected === undefined) {
+            warnings.push(`${itemPrefix}缺少可选字段 collected，默认值为0`);
+          } else if (typeof item.collected !== "number" || !Number.isInteger(item.collected)) {
+            errors.push(`${itemPrefix}的 collected 必须为整数`);
+          } else if (!Number.isSafeInteger(item.collected)) {
+            errors.push(`${itemPrefix}的 collected 超出安全整数范围`);
+          } else if (item.collected < 0) {
+            errors.push(`${itemPrefix}的 collected 不能为负数`);
+          } else if (typeof item.count === "number" && Number.isInteger(item.count) && item.collected > item.count) {
+            errors.push(`${itemPrefix}的 collected (${item.collected}) 不能超过 count (${item.count})`);
+          }
+
+          if (order.completed === true
+              && typeof item.count === "number" && Number.isInteger(item.count)
+              && typeof item.collected === "number" && Number.isInteger(item.collected)
+              && item.collected < item.count) {
+            warnings.push(`${orderPrefix}已标记为完成，但 ${itemPrefix}的 collected (${item.collected}) 未达到 count (${item.count})`);
           }
         }
       }
