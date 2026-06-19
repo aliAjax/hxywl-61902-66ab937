@@ -1108,6 +1108,7 @@ function App(): React.ReactElement {
           completed: o.completed,
           items: o.items.map(it => ({ ...it })),
         })),
+        spawnCooldownEnd: spawnCooldownEndRef.current || 0,
       };
       const saveFile = createSaveFile(gameData, true);
       downloadSaveFile(saveFile);
@@ -1178,13 +1179,14 @@ function App(): React.ReactElement {
 
   const applyImportedSave = useCallback((save: SaveFile, validation: ValidateResult): void => {
     try {
-      const fallback = {
+      const fallback: SaveFileGameData = {
         board: boardRef.current,
         coins: coinsRef.current,
         maxLevel: maxLevelRef.current,
         unlockedLevels: unlockedLevelsRef.current,
         unlockTimes: unlockTimesRef.current,
         orders: ordersRef.current,
+        spawnCooldownEnd: spawnCooldownEndRef.current || 0,
       };
 
       const sanitized = sanitizeSaveData(save.data, fallback);
@@ -1192,12 +1194,21 @@ function App(): React.ReactElement {
         ? (sanitized.orders as Order[])
         : generateOrders(sanitized.unlockedLevels);
 
+      const importedCooldownEnd = sanitized.spawnCooldownEnd ?? 0;
+      const now = Date.now();
+      const remainingMs = Math.max(0, importedCooldownEnd - now);
+      const remainingSeconds = Math.ceil(remainingMs / 1000);
+
       setBoard(sanitized.board);
       setCoins(Math.max(sanitized.coins, 0));
       setMaxLevel(sanitized.maxLevel);
       setUnlockedLevels(sanitized.unlockedLevels);
       setUnlockTimes(sanitized.unlockTimes);
       setOrders(newOrders);
+      setSpawnCooldownEnd(importedCooldownEnd);
+      setSpawnCooldown(remainingSeconds);
+      spawnCooldownEndRef.current = importedCooldownEnd;
+      spawnCooldownRef.current = remainingSeconds;
 
       doManualSave();
 
