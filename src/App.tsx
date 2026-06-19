@@ -47,6 +47,10 @@ const MIN_ORDER_ITEMS = 1;
 const MAX_ORDER_ITEMS = 3;
 const MAX_OFFLINE_HOURS = 8;
 const BASE_EARNINGS_PER_MINUTE = 2;
+const SPAWN_COST = 10;
+const SPAWN_COOLDOWN_SECONDS = 5;
+const SPAWN_MIN_LEVEL = 1;
+const SPAWN_MAX_LEVEL = 3;
 let orderIdCounter = 0;
 
 interface GameState {
@@ -331,6 +335,9 @@ function App(): React.ReactElement {
   const [orders, setOrders] = useState<Order[]>(generateOrders(initialState.unlockedLevels));
   const [toast, setToast] = useState<string | null>(null);
   const [selectedDessert, setSelectedDessert] = useState<number | null>(null);
+  const [spawnCooldown, setSpawnCooldown] = useState<number>(0);
+  const spawnCooldownRef = useRef<number>(0);
+  const spawnTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [drag, setDrag] = useState<DragState>({
     isDragging: false,
@@ -369,6 +376,7 @@ function App(): React.ReactElement {
   unlockTimesRef.current = unlockTimes;
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
+  spawnCooldownRef.current = spawnCooldown;
 
   useEffect(() => {
     saveGameState({
@@ -441,6 +449,15 @@ function App(): React.ReactElement {
     };
   }, [checkOfflineReward]);
 
+  useEffect(() => {
+    return () => {
+      if (spawnTimerRef.current) {
+        clearInterval(spawnTimerRef.current);
+        spawnTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const getRandomEmptyCell = useCallback((currentBoard: (number | null)[]): number | null => {
     const emptyIndices: number[] = [];
     currentBoard.forEach((cell, index) => {
@@ -450,21 +467,66 @@ function App(): React.ReactElement {
     return emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
   }, []);
 
-  const spawnDessert = useCallback((targetLevel?: number): boolean => {
+  const startSpawnCooldown = useCallback((): void => {
+    if (spawnTimerRef.current) {
+      clearInterval(spawnTimerRef.current);
+    }
+    setSpawnCooldown(SPAWN_COOLDOWN_SECONDS);
+    spawnCooldownRef.current = SPAWN_COOLDOWN_SECONDS;
+    spawnTimerRef.current = setInterval(() => {
+      setSpawnCooldown((prev) => {
+        const next = prev - 1;
+        spawnCooldownRef.current = next;
+        if (next <= 0) {
+          if (spawnTimerRef.current) {
+            clearInterval(spawnTimerRef.current);
+            spawnTimerRef.current = null;
+          }
+          return 0;
+        }
+        return next;
+      });
+    }, 1000);
+  }, []);
+
+  const spawnDessert = useCallback((targetLevel?: number, freeSpawn: boolean = false): boolean => {
+    if (spawnCooldownRef.current > 0) {
+      showToast(`⏳ 冷却中，请等待 ${spawnCooldownRef.current} 秒`);
+      return false;
+    }
+
+    if (!freeSpawn && coinsRef.current < SPAWN_COST) {
+      showToast(`💰 金币不足！需要 ${SPAWN_COST} 金币`);
+      return false;
+    }
+
+    const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
+    const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
     const level = targetLevel || Math.min(
-      Math.floor(Math.random() * Math.min(maxLevelRef.current, 3)) + 1,
+      Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL,
       DESSERTS.length
     );
     const emptyIndex = getRandomEmptyCell(boardRef.current);
     if (emptyIndex === null) {
-      showToast("棋盘已满！请先合并一些甜品");
+      showToast("🧹 棋盘已满！请点击自动整理或合并甜品");
       return false;
+    }
+
+    if (!freeSpawn) {
+      setCoins((prev: number) => prev - SPAWN_COST);
     }
     const newBoard = [...boardRef.current];
     newBoard[emptyIndex] = level;
     setBoard(newBoard);
+
+    if (!freeSpawn) {
+      startSpawnCooldown();
+    }
+
+    const dessert = DESSERTS[level - 1];
+    showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
     return true;
-  }, [getRandomEmptyCell, showToast]);
+  }, [getRandomEmptyCell, showToast, startSpawnCooldown]);
 
   const triggerSuccessFeedback = useCallback((index: number): void => {
     setFeedback({
@@ -699,10 +761,29 @@ function App(): React.ReactElement {
       if (isNaN(index) || index < 0 || index >= BOARD_SIZE) return;
       if (boardRef.current[index] !== null) return;
 
-      const level = Math.floor(Math.random() * Math.min(maxLevelRef.current, 3)) + 1;
+      if (spawnCooldownRef.current > 0) {
+        showToast(`⏳ 冷却中，请等待 ${spawnCooldownRef.current} 秒`);
+        return;
+      }
+
+      if (coinsRef.current < SPAWN_COST) {
+        showToast(`💰 金币不足！需要 ${SPAWN_COST} 金币`);
+        return;
+      }
+
+      const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
+      const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
+      const level = Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL;
+
+      setCoins((prev: number) => prev - SPAWN_COST);
       const newBoard = [...boardRef.current];
       newBoard[index] = level;
       setBoard(newBoard);
+
+      startSpawnCooldown();
+
+      const dessert = DESSERTS[level - 1];
+      showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${SPAWN_COST}💰`);
     };
 
     document.addEventListener("pointerdown", handleGlobalPointerDown, true);
@@ -765,18 +846,29 @@ function App(): React.ReactElement {
     showToast("📋 订单已刷新！");
   }, [showToast]);
 
+  const organizeBoard = useCallback((): void => {
+    const newBoard = Array(BOARD_SIZE).fill(null);
+    const nonNullCells = boardRef.current.filter((cell: number | null) => cell !== null) as number[];
+    const levelCounts = new Map<number, number>();
+    nonNullCells.forEach((level) => {
+      levelCounts.set(level, (levelCounts.get(level) || 0) + 1);
+    });
+    const sortedLevels = Array.from(levelCounts.entries()).sort((a, b) => a[0] - b[0]);
+    let currentIndex = 0;
+    for (const [level, count] of sortedLevels) {
+      for (let i = 0; i < count; i++) {
+        newBoard[currentIndex++] = level;
+      }
+    }
+    setBoard(newBoard);
+    showToast("🧹 整理完成！相同等级甜品已聚拢");
+  }, [showToast]);
+
   const handleAction = (action: string): void => {
     if (action === "生成甜品") {
       spawnDessert();
     } else if (action === "自动整理") {
-      const newBoard = Array(BOARD_SIZE).fill(null);
-      const nonNullCells = board.filter((cell: number | null) => cell !== null) as number[];
-      nonNullCells.sort((a: number, b: number) => a - b);
-      nonNullCells.forEach((cell: number, index: number) => {
-        newBoard[index] = cell;
-      });
-      setBoard(newBoard);
-      showToast("🧹 整理完成！");
+      organizeBoard();
     } else if (action === "领取收益") {
       const reward = calculateOfflineReward();
       if (reward.isValid) {
@@ -802,7 +894,7 @@ function App(): React.ReactElement {
     const hasAnyDessert = board.some((cell: number | null) => cell !== null);
     if (!hasAnyDessert) {
       for (let i = 0; i < 5; i++) {
-        spawnDessert(1);
+        spawnDessert(1, true);
       }
     }
   }, []);
@@ -1122,9 +1214,37 @@ function App(): React.ReactElement {
           </div>
 
           <div className="actions">
-            {game.actions.map((action: string) => (
-              <button key={action} onClick={() => handleAction(action)}>{action}</button>
-            ))}
+            {game.actions.map((action: string) => {
+              if (action === "生成甜品") {
+                const isOnCooldown = spawnCooldown > 0;
+                const canAfford = coins >= SPAWN_COST;
+                const isDisabled = isOnCooldown || !canAfford;
+                return (
+                  <button
+                    key={action}
+                    className={`action-spawn ${isOnCooldown ? "on-cooldown" : ""} ${!canAfford ? "cannot-afford" : ""}`}
+                    onClick={() => handleAction(action)}
+                    disabled={isDisabled}
+                  >
+                    <span className="action-main-text">{action}</span>
+                    <span className="action-sub-text">
+                      {isOnCooldown
+                        ? `⏳ 冷却中 ${spawnCooldown}s`
+                        : `💰 消耗 ${SPAWN_COST} 金币 · Lv.${SPAWN_MIN_LEVEL}-${SPAWN_MAX_LEVEL}`}
+                    </span>
+                    {isOnCooldown && (
+                      <div
+                        className="cooldown-progress"
+                        style={{ width: `${(spawnCooldown / SPAWN_COOLDOWN_SECONDS) * 100}%` }}
+                      />
+                    )}
+                  </button>
+                );
+              }
+              return (
+                <button key={action} onClick={() => handleAction(action)}>{action}</button>
+              );
+            })}
           </div>
         </aside>
       </section>
