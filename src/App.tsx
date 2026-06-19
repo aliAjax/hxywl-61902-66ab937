@@ -40,10 +40,13 @@ const DESSERTS = [
 
 const BOARD_SIZE = 25;
 const STORAGE_KEY = game.id + "-save";
+const OFFLINE_DATA_KEY = game.id + "-offline";
 const POINTER_MOVE_THRESHOLD = 5;
 const MAX_ORDERS = 3;
 const MIN_ORDER_ITEMS = 1;
 const MAX_ORDER_ITEMS = 3;
+const MAX_OFFLINE_HOURS = 8;
+const BASE_EARNINGS_PER_MINUTE = 2;
 let orderIdCounter = 0;
 
 interface GameState {
@@ -52,6 +55,21 @@ interface GameState {
   maxLevel: number;
   unlockedLevels: number[];
   unlockTimes: { [key: number]: string };
+}
+
+interface OfflineData {
+  lastLeaveTime: number;
+  lastClaimTime: number;
+  maxLevelAtLeave: number;
+  baseEarningsRate: number;
+}
+
+interface OfflineReward {
+  coins: number;
+  offlineMinutes: number;
+  maxLevel: number;
+  isValid: boolean;
+  reason?: "first" | "rollback" | "too_short" | "already_claimed";
 }
 
 interface OrderItem {
@@ -111,6 +129,93 @@ function loadGameState(): GameState {
 
 function saveGameState(state: GameState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function loadOfflineData(): OfflineData | null {
+  try {
+    const saved = localStorage.getItem(OFFLINE_DATA_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        lastLeaveTime: parsed.lastLeaveTime || 0,
+        lastClaimTime: parsed.lastClaimTime || 0,
+        maxLevelAtLeave: parsed.maxLevelAtLeave || 1,
+        baseEarningsRate: parsed.baseEarningsRate || BASE_EARNINGS_PER_MINUTE,
+      };
+    }
+  } catch (e) {
+    console.error("Failed to load offline data:", e);
+  }
+  return null;
+}
+
+function saveOfflineData(data: OfflineData): void {
+  localStorage.setItem(OFFLINE_DATA_KEY, JSON.stringify(data));
+}
+
+function calculateBaseEarningsRate(maxLevel: number): number {
+  return BASE_EARNINGS_PER_MINUTE * maxLevel;
+}
+
+function hasUnclaimedReward(): boolean {
+  const offlineData = loadOfflineData();
+  if (!offlineData || offlineData.lastLeaveTime === 0) return false;
+  return offlineData.lastClaimTime < offlineData.lastLeaveTime;
+}
+
+function calculateOfflineReward(): OfflineReward {
+  const offlineData = loadOfflineData();
+  const now = Date.now();
+
+  if (!offlineData || offlineData.lastLeaveTime === 0) {
+    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "first" };
+  }
+
+  if (now < offlineData.lastLeaveTime) {
+    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "rollback" };
+  }
+
+  if (offlineData.lastClaimTime >= offlineData.lastLeaveTime) {
+    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "already_claimed" };
+  }
+
+  const offlineMs = now - offlineData.lastLeaveTime;
+  const offlineMinutes = Math.floor(offlineMs / 60000);
+
+  if (offlineMinutes < 1) {
+    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "too_short" };
+  }
+
+  const maxOfflineMinutes = MAX_OFFLINE_HOURS * 60;
+  const cappedMinutes = Math.min(offlineMinutes, maxOfflineMinutes);
+
+  const coins = Math.floor(cappedMinutes * offlineData.baseEarningsRate);
+
+  return {
+    coins,
+    offlineMinutes: cappedMinutes,
+    maxLevel: offlineData.maxLevelAtLeave,
+    isValid: true,
+  };
+}
+
+function recordLeaveTime(maxLevel: number): void {
+  const existing = loadOfflineData();
+  const offlineData: OfflineData = {
+    lastLeaveTime: Date.now(),
+    lastClaimTime: existing?.lastClaimTime || 0,
+    maxLevelAtLeave: maxLevel,
+    baseEarningsRate: calculateBaseEarningsRate(maxLevel),
+  };
+  saveOfflineData(offlineData);
+}
+
+function markAsClaimed(): void {
+  const offlineData = loadOfflineData();
+  if (offlineData) {
+    offlineData.lastClaimTime = Date.now();
+    saveOfflineData(offlineData);
+  }
 }
 
 function generateOrder(unlockedLevels: number[]): Order {
@@ -245,6 +350,9 @@ function App(): React.ReactElement {
     timestamp: 0,
   });
 
+  const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
+  const [offlineReward, setOfflineReward] = useState<OfflineReward | null>(null);
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
@@ -276,6 +384,62 @@ function App(): React.ReactElement {
     setToast(message);
     setTimeout(() => setToast(null), 1500);
   }, []);
+
+  const formatOfflineDuration = (minutes: number): string => {
+    if (minutes < 60) {
+      return `${minutes} 分钟`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (mins === 0) {
+      return `${hours} 小时`;
+    }
+    return `${hours} 小时 ${mins} 分钟`;
+  };
+
+  const claimOfflineReward = useCallback((): void => {
+    if (!offlineReward || !offlineReward.isValid) return;
+    if (!hasUnclaimedReward()) return;
+
+    setCoins((prev: number) => prev + offlineReward.coins);
+    markAsClaimed();
+    setShowOfflineModal(false);
+    showToast(`🎉 离线收益领取成功！+${offlineReward.coins} 金币`);
+  }, [offlineReward, showToast]);
+
+  const checkOfflineReward = useCallback((): void => {
+    const reward = calculateOfflineReward();
+    setOfflineReward(reward);
+    if (reward.isValid && hasUnclaimedReward()) {
+      setShowOfflineModal(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkOfflineReward();
+  }, [checkOfflineReward]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (): void => {
+      recordLeaveTime(maxLevelRef.current);
+    };
+
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "hidden") {
+        recordLeaveTime(maxLevelRef.current);
+      } else if (document.visibilityState === "visible") {
+        checkOfflineReward();
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [checkOfflineReward]);
 
   const getRandomEmptyCell = useCallback((currentBoard: (number | null)[]): number | null => {
     const emptyIndices: number[] = [];
@@ -614,9 +778,21 @@ function App(): React.ReactElement {
       setBoard(newBoard);
       showToast("🧹 整理完成！");
     } else if (action === "领取收益") {
-      const offlineReward = maxLevel * 5;
-      setCoins((prev: number) => prev + offlineReward);
-      showToast(`💰 领取离线收益 +${offlineReward}金币！`);
+      const reward = calculateOfflineReward();
+      if (reward.isValid) {
+        setOfflineReward(reward);
+        setShowOfflineModal(true);
+      } else if (reward.reason === "too_short") {
+        showToast("⏳ 离线时间太短啦，再多等一会儿吧~");
+      } else if (reward.reason === "first") {
+        showToast("👋 欢迎来到甜品合成店！合成甜品赚取金币吧~");
+      } else if (reward.reason === "rollback") {
+        showToast("⚠️ 检测到时间异常，请检查系统时间");
+      } else if (reward.reason === "already_claimed") {
+        showToast("✅ 本期离线收益已领取，稍后再来吧~");
+      } else {
+        showToast("💰 暂时没有可领取的收益");
+      }
     }
   };
 
@@ -674,6 +850,59 @@ function App(): React.ReactElement {
   return (
     <main className="game-shell">
       {toast && <div className="toast">{toast}</div>}
+
+      {showOfflineModal && offlineReward && offlineReward.isValid && (
+        <div className="modal-overlay" onClick={() => setShowOfflineModal(false)}>
+          <div className="modal-content offline-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowOfflineModal(false)}>×</button>
+            <div className="offline-icon">
+              <span className="offline-emoji">🌙</span>
+            </div>
+            <h2 className="offline-title">离线收益</h2>
+            <p className="offline-subtitle">甜品店在你休息时也在努力营业~</p>
+            
+            <div className="offline-info">
+              <div className="offline-info-row">
+                <span className="offline-info-label">离线时长</span>
+                <span className="offline-info-value">
+                  {formatOfflineDuration(offlineReward.offlineMinutes)}
+                </span>
+              </div>
+              <div className="offline-info-row">
+                <span className="offline-info-label">当前最高等级</span>
+                <span className="offline-info-value">
+                  Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji}
+                </span>
+              </div>
+              <div className="offline-info-row">
+                <span className="offline-info-label">收益速度</span>
+                <span className="offline-info-value">
+                  {calculateBaseEarningsRate(offlineReward.maxLevel)} 金币/分钟
+                </span>
+              </div>
+            </div>
+
+            <div className="offline-divider"></div>
+
+            <div className="offline-reward-section">
+              <span className="offline-reward-label">获得金币</span>
+              <span className="offline-reward-coins">
+                💰 +{offlineReward.coins.toLocaleString()}
+              </span>
+            </div>
+
+            {offlineReward.offlineMinutes >= MAX_OFFLINE_HOURS * 60 && (
+              <p className="offline-cap-hint">
+                ⚡ 已达最高离线时长 ({MAX_OFFLINE_HOURS}小时)
+              </p>
+            )}
+
+            <button className="offline-claim-btn" onClick={claimOfflineReward}>
+              🎁 立即领取
+            </button>
+          </div>
+        </div>
+      )}
 
       {selectedDessert !== null && (
         <div className="modal-overlay" onClick={() => setSelectedDessert(null)}>

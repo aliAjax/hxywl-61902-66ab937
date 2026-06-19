@@ -1068,3 +1068,145 @@ button {
     padding: 10px 18px;
   }
 }
+
+.offline-modal {
+  background: linear-gradient(180deg, #1e1b4b, #0f172a) !important;
+  border-color: rgba(168, 85, 247, 0.3) !important;
+  box-shadow: 0 25px 80px rgba(168, 85, 247, 0.3),
+              0 0 0 1px rgba(168, 85, 247, 0.2) !important;
+}
+
+.offline-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.3), rgba(99, 102, 241, 0.2));
+  border: 2px solid rgba(168, 85, 247, 0.4);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(168, 85, 247, 0.3); }
+  50% { transform: scale(1.05); box-shadow: 0 0 40px rgba(168, 85, 247, 0.5); }
+}
+
+.offline-emoji {
+  font-size: 44px;
+  line-height: 1;
+}
+
+.offline-title {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.offline-subtitle {
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.offline-info {
+  background: rgba(30, 27, 75, 0.6);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.offline-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.offline-info-row:not(:last-child) {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.offline-info-label {
+  font-size: 13px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.offline-info-value {
+  font-size: 13px;
+  color: #f1f5f9;
+  font-weight: 700;
+}
+
+.offline-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.4), transparent);
+  margin: 0 0 16px;
+}
+
+.offline-reward-section {
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.offline-reward-label {
+  display: block;
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.offline-reward-coins {
+  display: block;
+  font-size: 32px;
+  font-weight: 800;
+  color: #fbbf24;
+  text-shadow: 0 2px 10px rgba(251, 191, 36, 0.4);
+  animation: coinBounce 0.6s ease-out;
+}
+
+@keyframes coinBounce {
+  0% { transform: scale(0.5); opacity: 0; }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.offline-cap-hint {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: #f59e0b;
+  text-align: center;
+  background: rgba(245, 158, 11, 0.1);
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.offline-claim-btn {
+  width: 100%;
+  min-height: 48px;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 4px 20px rgba(251, 191, 36, 0.4);
+}
+
+.offline-claim-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 28px rgba(251, 191, 36, 0.5);
+  filter: brightness(1.05);
+}
+
+.offline-claim-btn:active {
+  transform: translateY(0) scale(0.98);
+}
