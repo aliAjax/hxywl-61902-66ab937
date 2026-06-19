@@ -41,6 +41,7 @@ import {
   calculateOrderItemReward,
   calculateEventOrderReward,
   calculateEventResult as calculateEventResultImpl,
+  getMergeCostToLevel,
 } from "./gameConfig";
 import SimulationPanel from "./SimulationPanel";
 
@@ -69,6 +70,7 @@ const game = {
 };
 const EVENT_SHARDS_KEY = game.id + "-shards";
 const EVENT_HIGH_SCORE_KEY = game.id + "-event-highscore";
+const RECENTLY_UNLOCKED_KEY = game.id + "-recently-unlocked";
 
 interface EventOrder {
   id: number;
@@ -569,6 +571,54 @@ function formatUnlockTime(isoString: string): string {
   return `${month}月${day}日 ${hour}:${minute}解锁`;
 }
 
+interface RecentlyUnlocked {
+  level: number;
+  timestamp: string;
+  seen: boolean;
+}
+
+function loadRecentlyUnlocked(): RecentlyUnlocked | null {
+  try {
+    const saved = localStorage.getItem(RECENTLY_UNLOCKED_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed.level === "number" && typeof parsed.timestamp === "string") {
+        return parsed as RecentlyUnlocked;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to load recently unlocked:", e);
+  }
+  return null;
+}
+
+function saveRecentlyUnlocked(data: RecentlyUnlocked | null): void {
+  try {
+    if (data) {
+      localStorage.setItem(RECENTLY_UNLOCKED_KEY, JSON.stringify(data));
+    } else {
+      localStorage.removeItem(RECENTLY_UNLOCKED_KEY);
+    }
+  } catch (e) {
+    console.error("Failed to save recently unlocked:", e);
+  }
+}
+
+function getNextUnlockHint(currentUnlockedLevels: number[]): { nextLevel: number; parentDessert: Dessert; spawnsNeeded: number; mergesNeeded: number; minCost: number } | null {
+  const maxUnlocked = Math.max(...currentUnlockedLevels);
+  const nextLevel = maxUnlocked + 1;
+  if (nextLevel > DESSERTS.length) return null;
+  const parentDessert = DESSERTS[maxUnlocked - 1];
+  const cost = getMergeCostToLevel(nextLevel, maxUnlocked);
+  return {
+    nextLevel,
+    parentDessert,
+    spawnsNeeded: cost.spawnsNeeded,
+    mergesNeeded: cost.mergesNeeded,
+    minCost: cost.minSpawnCost,
+  };
+}
+
 function submitOrder(board: (number | null)[], order: Order): { newBoard: (number | null)[]; success: boolean } {
   if (!canSubmitOrder(board, order)) {
     return { newBoard: board, success: false };
@@ -730,6 +780,7 @@ function App(): React.ReactElement {
   tutorialRef.current = tutorial;
 
   const [showSavePanel, setShowSavePanel] = useState<boolean>(false);
+  const [recentlyUnlocked, setRecentlyUnlocked] = useState<RecentlyUnlocked | null>(loadRecentlyUnlocked());
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
   const [showImportResult, setShowImportResult] = useState<{
@@ -780,6 +831,12 @@ function App(): React.ReactElement {
     setToast(message);
     setTimeout(() => setToast(null), 1500);
   }, []);
+
+  const dismissUnlockCelebration = useCallback((): void => {
+    const updated = recentlyUnlocked ? { ...recentlyUnlocked, seen: true } : null;
+    saveRecentlyUnlocked(updated);
+    setRecentlyUnlocked(updated);
+  }, [recentlyUnlocked]);
 
   const doManualSave = useCallback((): void => {
     saveGameState(
@@ -963,6 +1020,7 @@ function App(): React.ReactElement {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(OFFLINE_DATA_KEY);
       localStorage.removeItem(TUTORIAL_KEY);
+      localStorage.removeItem(RECENTLY_UNLOCKED_KEY);
 
       const newBoard = createInitialBoard();
       const newUnlockedLevels = [1];
@@ -974,6 +1032,7 @@ function App(): React.ReactElement {
       setUnlockedLevels(newUnlockedLevels);
       setUnlockTimes(newUnlockTimes);
       setOrders(generateOrders(newUnlockedLevels));
+      setRecentlyUnlocked(null);
       setTutorial({
         currentStep: "welcome",
         completedSteps: [],
@@ -1551,6 +1610,13 @@ function App(): React.ReactElement {
           setTimeout(() => showToast(`🎉 解锁新等级：${DESSERTS[newLevel - 1].name}！`), 800);
         }
         if (!unlockedLevelsRef.current.includes(newLevel)) {
+          const unlockData: RecentlyUnlocked = {
+            level: newLevel,
+            timestamp: new Date().toISOString(),
+            seen: false,
+          };
+          saveRecentlyUnlocked(unlockData);
+          setRecentlyUnlocked(unlockData);
           setUnlockedLevels((prev: number[]) => [...prev, newLevel].sort((a: number, b: number) => a - b));
           setUnlockTimes((prev: { [key: number]: string }) => ({
             ...prev,
@@ -1958,6 +2024,77 @@ function App(): React.ReactElement {
   return (
     <main className={mainClass}>
       {toast && <div className="toast">{toast}</div>}
+
+      {recentlyUnlocked && !recentlyUnlocked.seen && (() => {
+        const dessert = DESSERTS[recentlyUnlocked.level - 1];
+        if (!dessert) return null;
+        return (
+          <div className="modal-overlay" onClick={dismissUnlockCelebration}>
+            <div className="modal-content unlock-celebration-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="unlock-celebration-particles">
+                {[...Array(12)].map((_, i) => (
+                  <span key={i} className="unlock-particle" style={{
+                    left: `${8 + (i % 4) * 28}%`,
+                    top: `${10 + Math.floor(i / 4) * 30}%`,
+                    animationDelay: `${i * 0.1}s`,
+                  }}>
+                    {["✨", "⭐", "🎉", "🌟"][i % 4]}
+                  </span>
+                ))}
+              </div>
+              <div className="unlock-celebration-badge">
+                <span className="unlock-celebration-badge-text">NEW</span>
+              </div>
+              <div
+                className="unlock-celebration-icon"
+                style={{ background: `linear-gradient(145deg, ${dessert.color}cc, ${dessert.color}88)` }}
+              >
+                <span className="unlock-celebration-emoji">{dessert.emoji}</span>
+              </div>
+              <h2 className="unlock-celebration-title">🎉 新甜品解锁！</h2>
+              <div className="unlock-celebration-name">{dessert.name}</div>
+              <div className="unlock-celebration-level">等级 Lv.{dessert.level}</div>
+              <div className="unlock-celebration-divider"></div>
+              <div className="unlock-celebration-info">
+                <div className="unlock-celebration-row">
+                  <span className="unlock-celebration-label">合成价值</span>
+                  <span className="unlock-celebration-value">+{dessert.level * 10} 💰</span>
+                </div>
+                <div className="unlock-celebration-row">
+                  <span className="unlock-celebration-label">订单价值</span>
+                  <span className="unlock-celebration-value">+{dessert.level * 15} 💰/个</span>
+                </div>
+                <div className="unlock-celebration-row">
+                  <span className="unlock-celebration-label">解锁时间</span>
+                  <span className="unlock-celebration-value">{new Date(recentlyUnlocked.timestamp).toLocaleString('zh-CN')}</span>
+                </div>
+              </div>
+              {(() => {
+                const nextHint = getNextUnlockHint(unlockedLevels);
+                if (nextHint) {
+                  return (
+                    <div className="unlock-celebration-next-hint">
+                      <span className="unlock-next-arrow">👆</span>
+                      <span>下一个: {DESSERTS[nextHint.nextLevel - 1].emoji} {DESSERTS[nextHint.nextLevel - 1].name}</span>
+                      <span className="unlock-next-detail">
+                        需合成2个 {nextHint.parentDessert.emoji} {nextHint.parentDessert.name}
+                      </span>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="unlock-celebration-next-hint unlock-celebration-complete">
+                    🏆 恭喜！你已收集全部图鉴！
+                  </div>
+                );
+              })()}
+              <button className="unlock-celebration-btn" onClick={dismissUnlockCelebration}>
+                太棒了！ 🎊
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       <input
         ref={fileInputRef}
@@ -2749,6 +2886,53 @@ function App(): React.ReactElement {
                 {unlockedLevels.length}/{DESSERTS.length}
               </span>
             </div>
+            {(() => {
+              const nextHint = getNextUnlockHint(unlockedLevels);
+              if (nextHint) {
+                const nextDessert = DESSERTS[nextHint.nextLevel - 1];
+                return (
+                  <div className="next-unlock-hint-card">
+                    <div className="next-unlock-hint-header">
+                      <span className="next-unlock-hint-arrow">🔮</span>
+                      <span className="next-unlock-hint-title">下一个解锁目标</span>
+                    </div>
+                    <div className="next-unlock-hint-target">
+                      <span className="next-unlock-hint-emoji">{nextDessert.emoji}</span>
+                      <span className="next-unlock-hint-name">{nextDessert.name}</span>
+                      <span className="next-unlock-hint-level">Lv.{nextHint.nextLevel}</span>
+                    </div>
+                    <div className="next-unlock-hint-conditions">
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">合成条件</span>
+                        <span className="next-unlock-condition-value">
+                          2× {nextHint.parentDessert.emoji} {nextHint.parentDessert.name}
+                        </span>
+                      </div>
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">理论生成</span>
+                        <span className="next-unlock-condition-value">{nextHint.spawnsNeeded} 次</span>
+                      </div>
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">理论合成</span>
+                        <span className="next-unlock-condition-value">{nextHint.mergesNeeded} 次</span>
+                      </div>
+                      <div className="next-unlock-condition">
+                        <span className="next-unlock-condition-label">最低花费</span>
+                        <span className="next-unlock-condition-value">💰 {nextHint.minCost}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (unlockedLevels.length >= DESSERTS.length) {
+                return (
+                  <div className="next-unlock-hint-card next-unlock-complete">
+                    <span>🏆 恭喜！图鉴已全部收集！</span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <div className="collection-grid">
               {DESSERTS.map((dessert) => {
                 const isUnlocked = unlockedLevels.includes(dessert.level);
@@ -2778,9 +2962,14 @@ function App(): React.ReactElement {
                         {isUnlocked && unlockTime && (
                           <div className="collection-time">{formatUnlockTime(unlockTime)}</div>
                         )}
-                        {!isUnlocked && (
-                          <div className="collection-locked-hint">未解锁</div>
-                        )}
+                        {!isUnlocked && (() => {
+                          const prevDessert = dessert.level > 1 ? DESSERTS[dessert.level - 2] : null;
+                          return (
+                            <div className="collection-locked-hint">
+                              {prevDessert ? `2× ${prevDessert.emoji} 合成` : "生成获取"}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
