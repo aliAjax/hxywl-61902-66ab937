@@ -179,6 +179,9 @@ interface OfflineReward {
   maxLevel: number;
   isValid: boolean;
   reason?: "first" | "rollback" | "too_short" | "already_claimed";
+  earningsPerMinute: number;
+  capMinutes: number;
+  actualOfflineMinutes: number;
 }
 
 interface OrderItem {
@@ -371,29 +374,66 @@ function hasUnclaimedReward(): boolean {
 function calculateOfflineReward(): OfflineReward {
   const offlineData = loadOfflineData();
   const now = Date.now();
+  const maxOfflineMinutes = MAX_OFFLINE_HOURS * 60;
+  const fallbackMaxLevel = offlineData?.maxLevelAtLeave || 1;
+  const fallbackRate = calculateBaseEarningsRate(fallbackMaxLevel);
 
   if (!offlineData || offlineData.lastLeaveTime === 0) {
-    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "first" };
+    return {
+      coins: 0,
+      offlineMinutes: 0,
+      maxLevel: fallbackMaxLevel,
+      isValid: false,
+      reason: "first",
+      earningsPerMinute: fallbackRate,
+      capMinutes: maxOfflineMinutes,
+      actualOfflineMinutes: 0,
+    };
   }
 
   if (now < offlineData.lastLeaveTime) {
-    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "rollback" };
+    return {
+      coins: 0,
+      offlineMinutes: 0,
+      maxLevel: offlineData.maxLevelAtLeave,
+      isValid: false,
+      reason: "rollback",
+      earningsPerMinute: offlineData.baseEarningsRate,
+      capMinutes: maxOfflineMinutes,
+      actualOfflineMinutes: 0,
+    };
   }
 
   if (offlineData.lastClaimTime >= offlineData.lastLeaveTime) {
-    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "already_claimed" };
+    return {
+      coins: 0,
+      offlineMinutes: 0,
+      maxLevel: offlineData.maxLevelAtLeave,
+      isValid: false,
+      reason: "already_claimed",
+      earningsPerMinute: offlineData.baseEarningsRate,
+      capMinutes: maxOfflineMinutes,
+      actualOfflineMinutes: 0,
+    };
   }
 
   const offlineMs = now - offlineData.lastLeaveTime;
-  const offlineMinutes = Math.floor(offlineMs / 60000);
+  const actualMinutes = Math.floor(offlineMs / 60000);
 
-  if (offlineMinutes < 1) {
-    return { coins: 0, offlineMinutes: 0, maxLevel: 1, isValid: false, reason: "too_short" };
+  if (actualMinutes < 1) {
+    return {
+      coins: 0,
+      offlineMinutes: 0,
+      maxLevel: offlineData.maxLevelAtLeave,
+      isValid: false,
+      reason: "too_short",
+      earningsPerMinute: offlineData.baseEarningsRate,
+      capMinutes: maxOfflineMinutes,
+      actualOfflineMinutes: actualMinutes,
+    };
   }
 
-  const maxOfflineMinutes = MAX_OFFLINE_HOURS * 60;
-  const cappedMinutes = Math.min(offlineMinutes, maxOfflineMinutes);
-
+  const cappedMinutes = Math.min(actualMinutes, maxOfflineMinutes);
   const coins = Math.floor(cappedMinutes * offlineData.baseEarningsRate);
 
   return {
@@ -401,6 +441,9 @@ function calculateOfflineReward(): OfflineReward {
     offlineMinutes: cappedMinutes,
     maxLevel: offlineData.maxLevelAtLeave,
     isValid: true,
+    earningsPerMinute: offlineData.baseEarningsRate,
+    capMinutes: maxOfflineMinutes,
+    actualOfflineMinutes: actualMinutes,
   };
 }
 
@@ -2005,20 +2048,8 @@ function App(): React.ReactElement {
       organizeBoard();
     } else if (action === "领取收益") {
       const reward = calculateOfflineReward();
-      if (reward.isValid) {
-        setOfflineReward(reward);
-        setShowOfflineModal(true);
-      } else if (reward.reason === "too_short") {
-        showToast("⏳ 离线时间太短啦，再多等一会儿吧~");
-      } else if (reward.reason === "first") {
-        showToast("👋 欢迎来到甜品合成店！合成甜品赚取金币吧~");
-      } else if (reward.reason === "rollback") {
-        showToast("⚠️ 检测到时间异常，请检查系统时间");
-      } else if (reward.reason === "already_claimed") {
-        showToast("✅ 本期离线收益已领取，稍后再来吧~");
-      } else {
-        showToast("💰 暂时没有可领取的收益");
-      }
+      setOfflineReward(reward);
+      setShowOfflineModal(true);
     }
   };
 
@@ -2450,55 +2481,144 @@ function App(): React.ReactElement {
         </div>
       )}
 
-      {showOfflineModal && offlineReward && offlineReward.isValid && (
+      {showOfflineModal && offlineReward && (
         <div className="modal-overlay" onClick={() => setShowOfflineModal(false)}>
-          <div className="modal-content offline-modal" onClick={(e) => e.stopPropagation()}>
+          <div className={`modal-content offline-modal ${offlineReward.isValid ? "offline-valid" : "offline-invalid offline-" + offlineReward.reason}`} onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setShowOfflineModal(false)}>×</button>
-            <div className="offline-icon">
-              <span className="offline-emoji">🌙</span>
-            </div>
-            <h2 className="offline-title">离线收益</h2>
-            <p className="offline-subtitle">甜品店在你休息时也在努力营业~</p>
-            
-            <div className="offline-info">
-              <div className="offline-info-row">
-                <span className="offline-info-label">离线时长</span>
-                <span className="offline-info-value">
-                  {formatOfflineDuration(offlineReward.offlineMinutes)}
-                </span>
-              </div>
-              <div className="offline-info-row">
-                <span className="offline-info-label">当前最高等级</span>
-                <span className="offline-info-value">
-                  Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji}
-                </span>
-              </div>
-              <div className="offline-info-row">
-                <span className="offline-info-label">收益速度</span>
-                <span className="offline-info-value">
-                  {calculateBaseEarningsRate(offlineReward.maxLevel)} 金币/分钟
-                </span>
-              </div>
-            </div>
+            {offlineReward.isValid ? (
+              <>
+                <div className="offline-icon">
+                  <span className="offline-emoji">🌙</span>
+                </div>
+                <h2 className="offline-title">离线收益</h2>
+                <p className="offline-subtitle">甜品店在你休息时也在努力营业~</p>
+                
+                <div className="offline-info">
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">离线时长</span>
+                    <span className="offline-info-value">
+                      {formatOfflineDuration(offlineReward.actualOfflineMinutes)}
+                    </span>
+                  </div>
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">最高甜品等级</span>
+                    <span className="offline-info-value">
+                      Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.name}
+                    </span>
+                  </div>
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">每分钟收益</span>
+                    <span className="offline-info-value">
+                      {offlineReward.earningsPerMinute} 金币/分钟
+                    </span>
+                  </div>
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">封顶时长</span>
+                    <span className="offline-info-value">
+                      {formatOfflineDuration(offlineReward.capMinutes)}
+                    </span>
+                  </div>
+                  {offlineReward.actualOfflineMinutes > offlineReward.capMinutes && (
+                    <div className="offline-info-row offline-info-note">
+                      <span className="offline-info-label">已达封顶</span>
+                      <span className="offline-info-value offline-capped-text">
+                        超出 {formatOfflineDuration(offlineReward.actualOfflineMinutes - offlineReward.capMinutes)} 不计入
+                      </span>
+                    </div>
+                  )}
+                </div>
 
-            <div className="offline-divider"></div>
+                <div className="offline-divider"></div>
 
-            <div className="offline-reward-section">
-              <span className="offline-reward-label">获得金币</span>
-              <span className="offline-reward-coins">
-                💰 +{offlineReward.coins.toLocaleString()}
-              </span>
-            </div>
+                <div className="offline-reward-section">
+                  <span className="offline-reward-label">最终金币</span>
+                  <span className="offline-reward-coins">
+                    💰 +{offlineReward.coins.toLocaleString()}
+                  </span>
+                </div>
 
-            {offlineReward.offlineMinutes >= MAX_OFFLINE_HOURS * 60 && (
-              <p className="offline-cap-hint">
-                ⚡ 已达最高离线时长 ({MAX_OFFLINE_HOURS}小时)
-              </p>
+                {offlineReward.offlineMinutes >= offlineReward.capMinutes && (
+                  <p className="offline-cap-hint">
+                    ⚡ 已达最高离线时长（{MAX_OFFLINE_HOURS}小时），超出部分不再计算
+                  </p>
+                )}
+
+                <button className="offline-claim-btn" onClick={claimOfflineReward}>
+                  🎁 立即领取
+                </button>
+              </>
+            ) : (
+              <>
+                <div className={`offline-icon offline-icon-${offlineReward.reason}`}>
+                  <span className="offline-emoji">
+                    {offlineReward.reason === "first" ? "👋" :
+                     offlineReward.reason === "rollback" ? "⚠️" :
+                     offlineReward.reason === "too_short" ? "⏳" :
+                     offlineReward.reason === "already_claimed" ? "✅" : "💰"}
+                  </span>
+                </div>
+                <h2 className="offline-title">
+                  {offlineReward.reason === "first" ? "欢迎来到甜品店" :
+                   offlineReward.reason === "rollback" ? "时间异常" :
+                   offlineReward.reason === "too_short" ? "离线时间太短" :
+                   offlineReward.reason === "already_claimed" ? "已领取完毕" : "暂无收益"}
+                </h2>
+                <p className="offline-subtitle">
+                  {offlineReward.reason === "first" && "开始合成甜品赚取你的第一桶金吧~"}
+                  {offlineReward.reason === "rollback" && "检测到系统时间被回拨，请检查设备时间设置"}
+                  {offlineReward.reason === "too_short" && "再多等一会儿，收益会更丰厚哦~"}
+                  {offlineReward.reason === "already_claimed" && "本期收益已领取，稍后再来吧~"}
+                </p>
+
+                <div className="offline-info">
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">当前最高等级</span>
+                    <span className="offline-info-value">
+                      Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji}
+                    </span>
+                  </div>
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">每分钟收益</span>
+                    <span className="offline-info-value">
+                      {offlineReward.earningsPerMinute} 金币/分钟
+                    </span>
+                  </div>
+                  <div className="offline-info-row">
+                    <span className="offline-info-label">封顶时长</span>
+                    <span className="offline-info-value">
+                      {formatOfflineDuration(offlineReward.capMinutes)}
+                    </span>
+                  </div>
+                  {offlineReward.reason === "too_short" && (
+                    <div className="offline-info-row">
+                      <span className="offline-info-label">已离线</span>
+                      <span className="offline-info-value offline-warn-text">
+                        不足 1 分钟
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="offline-reason-detail">
+                  {offlineReward.reason === "first" && (
+                    <p>🎮 首次进入游戏，先去合成甜品赚取金币吧！下次离开再回来就能领取离线收益啦~</p>
+                  )}
+                  {offlineReward.reason === "rollback" && (
+                    <p>🔒 为了保护你的游戏进度，系统检测到时间异常后将暂停离线收益。请将设备时间调整为正确的当前时间，重新进入游戏后即可恢复。</p>
+                  )}
+                  {offlineReward.reason === "too_short" && (
+                    <p>💡 离线收益需要至少累计 1 分钟才会开始计算。请关闭游戏或切换到后台，稍等片刻再回来查看~</p>
+                  )}
+                  {offlineReward.reason === "already_claimed" && (
+                    <p>✨ 本期离线收益已成功领取！关闭游戏或切换到后台，离开一段时间后再次打开即可获得新的离线收益。</p>
+                  )}
+                </div>
+
+                <button className="offline-claim-btn offline-ok-btn" onClick={() => setShowOfflineModal(false)}>
+                  我知道了
+                </button>
+              </>
             )}
-
-            <button className="offline-claim-btn" onClick={claimOfflineReward}>
-              🎁 立即领取
-            </button>
           </div>
         </div>
       )}
