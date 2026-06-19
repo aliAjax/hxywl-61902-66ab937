@@ -602,6 +602,48 @@ button {
   color: var(--fail);
 }
 
+.order-progress-section {
+  margin: 10px 0;
+}
+
+.order-progress-bar {
+  position: relative;
+  height: 22px;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 11px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.order-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  border-radius: 11px;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+.order-progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+.event-order-progress {
+  border-color: rgba(168, 85, 247, 0.35);
+}
+
+.event-order-progress-fill {
+  background: linear-gradient(90deg, #a855f7, #ec4899);
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+}
+
 .order-footer {
   display: flex;
   justify-content: space-between;

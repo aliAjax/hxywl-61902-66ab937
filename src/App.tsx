@@ -537,6 +537,18 @@ function canSubmitOrder(board: (number | null)[], order: Order): boolean {
   return true;
 }
 
+function getOrderProgress(board: (number | null)[], order: Order): { percent: number; totalItems: number; completedItems: number } {
+  const levelTotals = getOrderLevelTotals(order);
+  let totalItems = 0;
+  let completedItems = 0;
+  for (const [level, count] of levelTotals) {
+    totalItems += count;
+    completedItems += Math.min(countDessertsOnBoard(board, level), count);
+  }
+  const percent = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
+  return { percent, totalItems, completedItems };
+}
+
 function formatUnlockTime(isoString: string): string {
   const date = new Date(isoString);
   const now = new Date();
@@ -2562,6 +2574,12 @@ function App(): React.ReactElement {
                   <h3>📋 活动订单</h3>
                 </div>
                 {eventOrders.map((order: EventOrder) => {
+                  const totalItems = order.items.reduce((sum, item) => sum + item.count, 0);
+                  const completedItems = order.items.reduce(
+                    (sum, item) => sum + Math.min(eventBoard.filter(c => c === item.level).length, item.count),
+                    0
+                  );
+                  const progressPercent = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
                   return (
                     <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
                       <div className="order-items">
@@ -2584,6 +2602,19 @@ function App(): React.ReactElement {
                           );
                         })}
                       </div>
+                      {!order.completed && (
+                        <div className="order-progress-section">
+                          <div className="order-progress-bar event-order-progress">
+                            <div
+                              className="order-progress-fill event-order-progress-fill"
+                              style={{ width: `${progressPercent}%` }}
+                            />
+                            <span className="order-progress-text">
+                              {completedItems}/{totalItems} · {progressPercent}%
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       <div className="order-footer">
                         <span className="order-reward">+{order.reward.coins}💰 +{order.reward.shards}💎</span>
                         {!order.completed && (
@@ -2654,6 +2685,7 @@ function App(): React.ReactElement {
               orders.map((order: Order) => {
                 const levelTotals = getOrderLevelTotals(order);
                 const mergedItems = Array.from(levelTotals.entries()).map(([level, count]) => ({ level, count }));
+                const progress = getOrderProgress(board, order);
                 return (
                   <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
                     <div className="order-items">
@@ -2676,6 +2708,19 @@ function App(): React.ReactElement {
                         );
                       })}
                     </div>
+                    {!order.completed && (
+                      <div className="order-progress-section">
+                        <div className="order-progress-bar">
+                          <div
+                            className="order-progress-fill"
+                            style={{ width: `${progress.percent}%` }}
+                          />
+                          <span className="order-progress-text">
+                            {progress.completedItems}/{progress.totalItems} · {progress.percent}%
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     <div className="order-footer">
                       <span className="order-reward">+{order.reward}💰</span>
                       {!order.completed && (
