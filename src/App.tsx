@@ -40,6 +40,7 @@ const DESSERTS = [
 
 const BOARD_SIZE = 25;
 const STORAGE_KEY = game.id + "-save";
+const POINTER_MOVE_THRESHOLD = 5;
 
 interface GameState {
   board: (number | null)[];
@@ -52,6 +53,23 @@ interface Order {
   level: number;
   reward: number;
   filled: boolean;
+}
+
+interface DragState {
+  isDragging: boolean;
+  sourceIndex: number | null;
+  pointerStartX: number;
+  pointerStartY: number;
+  currentX: number;
+  currentY: number;
+  pointerId: number | null;
+  hasMoved: boolean;
+}
+
+interface FeedbackState {
+  type: "success" | "fail" | null;
+  indices: number[];
+  timestamp: number;
 }
 
 function loadGameState(): GameState {
@@ -87,25 +105,45 @@ function App(): React.ReactElement {
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
   const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
-  const [mergeSuccess, setMergeSuccess] = useState<number | null>(null);
-  const [mergeFail, setMergeFail] = useState<[number, number] | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[]>([
     { level: 3, reward: 50, filled: false },
     { level: 4, reward: 100, filled: false },
     { level: 5, reward: 200, filled: false },
   ]);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [drag, setDrag] = useState<DragState>({
+    isDragging: false,
+    sourceIndex: null,
+    pointerStartX: 0,
+    pointerStartY: 0,
+    currentX: 0,
+    currentY: 0,
+    pointerId: null,
+    hasMoved: false,
+  });
+
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState>({
+    type: null,
+    indices: [],
+    timestamp: 0,
+  });
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
   const unlockedLevelsRef = useRef<number[]>(unlockedLevels);
+  const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const dragRef = useRef<DragState>(drag);
+  const hoverRef = useRef<number | null>(null);
 
   boardRef.current = board;
   coinsRef.current = coins;
   maxLevelRef.current = maxLevel;
   unlockedLevelsRef.current = unlockedLevels;
+  dragRef.current = drag;
+  hoverRef.current = hoverIndex;
 
   useEffect(() => {
     saveGameState({
@@ -146,75 +184,79 @@ function App(): React.ReactElement {
     return true;
   }, [getRandomEmptyCell, showToast]);
 
-  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number): void => {
-    if (board[index] === null) {
-      e.preventDefault();
-      return;
-    }
-    setDragIndex(index);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", index.toString());
-  };
+  const triggerSuccessFeedback = useCallback((index: number): void => {
+    setFeedback({
+      type: "success",
+      indices: [index],
+      timestamp: Date.now(),
+    });
+    setTimeout(() => {
+      setFeedback((prev) => {
+        if (Date.now() - prev.timestamp >= 550) {
+          return { type: null, indices: [], timestamp: 0 };
+        }
+        return prev;
+      });
+    }, 600);
+  }, []);
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, index: number): void => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (index !== dragIndex) {
-      setDropTargetIndex(index);
-    }
-  };
+  const triggerFailFeedback = useCallback((indices: [number, number]): void => {
+    setFeedback({
+      type: "fail",
+      indices,
+      timestamp: Date.now(),
+    });
+    setTimeout(() => {
+      setFeedback((prev) => {
+        if (Date.now() - prev.timestamp >= 450) {
+          return { type: null, indices: [], timestamp: 0 };
+        }
+        return prev;
+      });
+    }, 500);
+  }, []);
 
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>, index: number): void => {
-    e.preventDefault();
-    if (dropTargetIndex === index) {
-      setDropTargetIndex(null);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>, targetIndex: number): void => {
-    e.preventDefault();
-    const sourceIndex = Number(e.dataTransfer.getData("text/plain"));
-    
-    if (sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= BOARD_SIZE) {
-      setDragIndex(null);
-      setDropTargetIndex(null);
-      return;
+  const performMerge = useCallback((sourceIndex: number, targetIndex: number): boolean => {
+    if (sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= BOARD_SIZE
+        || targetIndex < 0 || targetIndex >= BOARD_SIZE) {
+      return false;
     }
 
-    const sourceLevel = board[sourceIndex];
-    const targetLevel = board[targetIndex];
+    const sourceLevel = boardRef.current[sourceIndex];
+    const targetLevel = boardRef.current[targetIndex];
 
     if (sourceLevel === null) {
-      setDragIndex(null);
-      setDropTargetIndex(null);
-      return;
+      return false;
     }
 
     if (targetLevel === null) {
-      const newBoard = [...board];
+      const newBoard = [...boardRef.current];
       newBoard[targetIndex] = sourceLevel;
       newBoard[sourceIndex] = null;
       setBoard(newBoard);
-    } else if (sourceLevel === targetLevel) {
+      showToast("📦 甜品已移动");
+      return true;
+    }
+
+    if (sourceLevel === targetLevel) {
       const newLevel = sourceLevel + 1;
       if (newLevel > DESSERTS.length) {
-        showToast("已达到最高等级！");
-        setMergeFail([sourceIndex, targetIndex]);
-        setTimeout(() => setMergeFail(null), 500);
+        showToast("⭐ 已达到最高等级！");
+        triggerFailFeedback([sourceIndex, targetIndex]);
+        return false;
       } else {
         const coinReward = newLevel * 10;
-        const newBoard = [...board];
+        const newBoard = [...boardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
         setBoard(newBoard);
         setCoins((prev: number) => prev + coinReward);
-        setMergeSuccess(targetIndex);
-        setTimeout(() => setMergeSuccess(null), 600);
-        showToast(`✨ 合成成功！+${coinReward}金币`);
+        triggerSuccessFeedback(targetIndex);
+        showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
 
         if (newLevel > maxLevelRef.current) {
           setMaxLevel(newLevel);
-          showToast(`🎉 解锁新等级：${DESSERTS[newLevel - 1].name}！`);
+          setTimeout(() => showToast(`🎉 解锁新等级：${DESSERTS[newLevel - 1].name}！`), 800);
         }
         if (!unlockedLevelsRef.current.includes(newLevel)) {
           setUnlockedLevels((prev: number[]) => [...prev, newLevel].sort((a: number, b: number) => a - b));
@@ -223,26 +265,183 @@ function App(): React.ReactElement {
         setOrders((prev: Order[]) => prev.map((order: Order) => {
           if (!order.filled && newLevel >= order.level) {
             setCoins((c: number) => c + order.reward);
-            showToast(`📦 订单完成！+${order.reward}金币`);
+            setTimeout(() => showToast(`📦 订单完成！+${order.reward}金币`), 1200);
             return { ...order, filled: true };
           }
           return order;
         }));
+        return true;
       }
     } else {
-      setMergeFail([sourceIndex, targetIndex]);
-      setTimeout(() => setMergeFail(null), 500);
+      triggerFailFeedback([sourceIndex, targetIndex]);
       showToast("❌ 等级不同，无法合成！");
+      return false;
     }
+  }, [showToast, triggerSuccessFeedback, triggerFailFeedback]);
 
-    setDragIndex(null);
-    setDropTargetIndex(null);
-  };
+  const getCellIndexFromPoint = useCallback((clientX: number, clientY: number): number | null => {
+    const cells = cellRefs.current;
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      if (!cell) continue;
+      const rect = cell.getBoundingClientRect();
+      if (clientX >= rect.left && clientX <= rect.right
+          && clientY >= rect.top && clientY <= rect.bottom) {
+        return i;
+      }
+    }
+    return null;
+  }, []);
 
-  const handleDragEnd = (): void => {
-    setDragIndex(null);
-    setDropTargetIndex(null);
-  };
+  const boardRefEl = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleGlobalPointerDown = (e: PointerEvent): void => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+
+      const target = e.target as HTMLElement;
+      const cellEl = target.closest?.<HTMLDivElement>(".cell");
+      if (!cellEl) return;
+
+      const boardEl = cellEl.closest?.<HTMLDivElement>(".board");
+      if (!boardEl || boardEl !== boardRefEl.current) return;
+
+      const idxStr = cellEl.getAttribute("data-index");
+      if (idxStr === null) return;
+      const index = Number(idxStr);
+      if (isNaN(index) || index < 0 || index >= BOARD_SIZE) return;
+      if (boardRef.current[index] === null) return;
+
+      e.preventDefault();
+      try {
+        cellEl.setPointerCapture?.(e.pointerId);
+      } catch {}
+
+      const newDrag: DragState = {
+        isDragging: true,
+        sourceIndex: index,
+        pointerStartX: e.clientX,
+        pointerStartY: e.clientY,
+        currentX: e.clientX,
+        currentY: e.clientY,
+        pointerId: e.pointerId,
+        hasMoved: false,
+      };
+      dragRef.current = newDrag;
+      hoverRef.current = null;
+      setDrag(newDrag);
+      setHoverIndex(null);
+    };
+
+    const handleGlobalPointerMove = (e: PointerEvent): void => {
+      const d = dragRef.current;
+      if (!d.isDragging || d.pointerId !== e.pointerId) return;
+      e.preventDefault();
+
+      const deltaX = Math.abs(e.clientX - d.pointerStartX);
+      const deltaY = Math.abs(e.clientY - d.pointerStartY);
+      const hasMoved = d.hasMoved || (deltaX > POINTER_MOVE_THRESHOLD || deltaY > POINTER_MOVE_THRESHOLD);
+
+      const updated: DragState = {
+        ...d,
+        currentX: e.clientX,
+        currentY: e.clientY,
+        hasMoved,
+      };
+      dragRef.current = updated;
+      setDrag(updated);
+
+      const hovered = getCellIndexFromPoint(e.clientX, e.clientY);
+      hoverRef.current = hovered;
+      setHoverIndex(hovered);
+    };
+
+    const handleGlobalPointerUp = (e: PointerEvent): void => {
+      const d = dragRef.current;
+      if (!d.isDragging || d.pointerId !== e.pointerId) return;
+      e.preventDefault();
+
+      try {
+        (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+      } catch {}
+
+      const targetIndex = getCellIndexFromPoint(e.clientX, e.clientY);
+
+      if (d.hasMoved && targetIndex !== null && d.sourceIndex !== null) {
+        performMerge(d.sourceIndex, targetIndex);
+      } else if (!d.hasMoved && d.sourceIndex !== null) {
+        showToast("💡 提示：拖动该甜品到相同等级上即可合成");
+      }
+
+      const resetDrag: DragState = {
+        isDragging: false,
+        sourceIndex: null,
+        pointerStartX: 0,
+        pointerStartY: 0,
+        currentX: 0,
+        currentY: 0,
+        pointerId: null,
+        hasMoved: false,
+      };
+      dragRef.current = resetDrag;
+      hoverRef.current = null;
+      setDrag(resetDrag);
+      setHoverIndex(null);
+    };
+
+    const handleGlobalPointerCancel = (e: PointerEvent): void => {
+      const d = dragRef.current;
+      if (!d.isDragging || d.pointerId !== e.pointerId) return;
+
+      const resetDrag: DragState = {
+        isDragging: false,
+        sourceIndex: null,
+        pointerStartX: 0,
+        pointerStartY: 0,
+        currentX: 0,
+        currentY: 0,
+        pointerId: null,
+        hasMoved: false,
+      };
+      dragRef.current = resetDrag;
+      hoverRef.current = null;
+      setDrag(resetDrag);
+      setHoverIndex(null);
+    };
+
+    const handleGlobalClick = (e: MouseEvent): void => {
+      if (dragRef.current.isDragging) return;
+      const target = e.target as HTMLElement;
+      const cellEl = target.closest?.<HTMLDivElement>(".cell");
+      if (!cellEl) return;
+      const boardEl = cellEl.closest?.<HTMLDivElement>(".board");
+      if (!boardEl || boardEl !== boardRefEl.current) return;
+      const idxStr = cellEl.getAttribute("data-index");
+      if (idxStr === null) return;
+      const index = Number(idxStr);
+      if (isNaN(index) || index < 0 || index >= BOARD_SIZE) return;
+      if (boardRef.current[index] !== null) return;
+
+      const level = Math.floor(Math.random() * Math.min(maxLevelRef.current, 3)) + 1;
+      const newBoard = [...boardRef.current];
+      newBoard[index] = level;
+      setBoard(newBoard);
+    };
+
+    document.addEventListener("pointerdown", handleGlobalPointerDown, true);
+    window.addEventListener("pointermove", handleGlobalPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleGlobalPointerUp, { passive: false });
+    window.addEventListener("pointercancel", handleGlobalPointerCancel, { passive: false });
+    document.addEventListener("click", handleGlobalClick, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleGlobalPointerDown, true);
+      window.removeEventListener("pointermove", handleGlobalPointerMove);
+      window.removeEventListener("pointerup", handleGlobalPointerUp);
+      window.removeEventListener("pointercancel", handleGlobalPointerCancel);
+      document.removeEventListener("click", handleGlobalClick, true);
+    };
+  }, [getCellIndexFromPoint, performMerge, showToast]);
 
   const handleAction = (action: string): void => {
     if (action === "生成甜品") {
@@ -263,19 +462,7 @@ function App(): React.ReactElement {
     }
   };
 
-  const handleCellClick = (index: number): void => {
-    if (board[index] === null) {
-      const level = Math.floor(Math.random() * Math.min(maxLevel, 3)) + 1;
-      const newBoard = [...board];
-      newBoard[index] = level;
-      setBoard(newBoard);
-    }
-  };
-
   const filledOrders = orders.filter((o: Order) => o.filled).length;
-  const isFailCell = (index: number): boolean => {
-    return mergeFail ? (mergeFail[0] === index || mergeFail[1] === index) : false;
-  };
 
   useEffect(() => {
     const hasAnyDessert = board.some((cell: number | null) => cell !== null);
@@ -286,9 +473,63 @@ function App(): React.ReactElement {
     }
   }, []);
 
+  const getCellClass = (index: number): string => {
+    const classes: string[] = ["cell"];
+    classes.push(board[index] ? "has-dessert" : "empty");
+
+    if (drag.isDragging && drag.sourceIndex === index) {
+      classes.push("pointer-dragging-source");
+    }
+    if (drag.isDragging && hoverIndex === index && drag.sourceIndex !== index) {
+      const sourceLevel = drag.sourceIndex !== null ? board[drag.sourceIndex] : null;
+      const targetLevel = board[index];
+      if (targetLevel === null) {
+        classes.push("pointer-drop-ok");
+      } else if (sourceLevel !== null && sourceLevel === targetLevel) {
+        classes.push("pointer-drop-ok");
+      } else {
+        classes.push("pointer-drop-no");
+      }
+    }
+    if (feedback.type === "success" && feedback.indices.includes(index)) {
+      classes.push("merge-success");
+    }
+    if (feedback.type === "fail" && feedback.indices.includes(index)) {
+      classes.push("merge-fail");
+    }
+    return classes.join(" ");
+  };
+
+  const getDragOffset = (): { x: number; y: number } => {
+    if (!drag.isDragging || drag.sourceIndex === null) return { x: 0, y: 0 };
+    const cell = cellRefs.current[drag.sourceIndex];
+    if (!cell) return { x: 0, y: 0 };
+    const rect = cell.getBoundingClientRect();
+    return {
+      x: drag.currentX - (rect.left + rect.width / 2),
+      y: drag.currentY - (rect.top + rect.height / 2),
+    };
+  };
+
+  const dragOffset = getDragOffset();
+
   return (
     <main className="game-shell">
       {toast && <div className="toast">{toast}</div>}
+
+      {drag.isDragging && drag.sourceIndex !== null && drag.hasMoved && board[drag.sourceIndex] && (
+        <div
+          className="drag-floating-element"
+          style={{
+            left: drag.currentX - 32,
+            top: drag.currentY - 32,
+            background: `linear-gradient(145deg, ${DESSERTS[board[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[board[drag.sourceIndex]! - 1].color}99)`,
+          }}
+        >
+          <span className="dessert-emoji">{DESSERTS[board[drag.sourceIndex]! - 1].emoji}</span>
+          <span className="dessert-level">Lv.{board[drag.sourceIndex]}</span>
+        </div>
+      )}
 
       <section className="hero">
         <p>{game.id} · H5Game · Port {game.port}</p>
@@ -311,27 +552,18 @@ function App(): React.ReactElement {
       </section>
 
       <section className={"playground " + game.mode}>
-        <div className="board merge-board">
+        <div
+          className="board merge-board"
+          ref={boardRefEl}
+        >
           {board.map((cell: number | null, index: number) => {
             const dessert = cell ? DESSERTS[cell - 1] : null;
             return (
               <div
                 key={index}
-                className={[
-                  "cell",
-                  cell ? "has-dessert" : "empty",
-                  dragIndex === index ? "dragging" : "",
-                  dropTargetIndex === index && dragIndex !== index ? "drop-target" : "",
-                  mergeSuccess === index ? "merge-success" : "",
-                  isFailCell(index) ? "merge-fail" : "",
-                ].filter(Boolean).join(" ")}
-                draggable={cell !== null}
-                onDragStart={(e: React.DragEvent<HTMLDivElement>) => handleDragStart(e, index)}
-                onDragOver={(e: React.DragEvent<HTMLDivElement>) => handleDragOver(e, index)}
-                onDragLeave={(e: React.DragEvent<HTMLDivElement>) => handleDragLeave(e, index)}
-                onDrop={(e: React.DragEvent<HTMLDivElement>) => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
-                onClick={() => handleCellClick(index)}
+                data-index={index}
+                ref={(el) => { cellRefs.current[index] = el; }}
+                className={getCellClass(index)}
                 style={dessert ? {
                   background: `linear-gradient(145deg, ${dessert.color}88, ${dessert.color}44)`,
                 } : {}}
