@@ -13,6 +13,36 @@ import {
   downloadSaveFile,
   readFileAsText,
 } from "./saveManager";
+import {
+  DESSERTS,
+  Dessert,
+  BOARD_SIZE,
+  STORAGE_KEY,
+  OFFLINE_DATA_KEY,
+  MAX_ORDERS,
+  MIN_ORDER_ITEMS,
+  MAX_ORDER_ITEMS,
+  MAX_OFFLINE_HOURS,
+  BASE_EARNINGS_PER_MINUTE,
+  SPAWN_COST,
+  SPAWN_COOLDOWN_SECONDS,
+  SPAWN_MIN_LEVEL,
+  SPAWN_MAX_LEVEL,
+  INITIAL_COINS,
+  INITIAL_SPAWN_COUNT,
+  EVENT_MAX_STEPS,
+  EVENT_INITIAL_COINS,
+  EVENT_ORDER_COUNT,
+  EVENT_BOARD_SIZE,
+  EVENT_SPAWN_COST,
+  EVENT_SPAWN_COOLDOWN,
+  calculateMergeReward,
+  calculateBaseEarningsRate,
+  calculateOrderItemReward,
+  calculateEventOrderReward,
+  calculateEventResult as calculateEventResultImpl,
+} from "./gameConfig";
+import SimulationPanel from "./SimulationPanel";
 
 const game = {
   "id": "hxywl-61902",
@@ -37,13 +67,6 @@ const game = {
   ],
   "mode": "merge"
 };
-
-const EVENT_MAX_STEPS = 25;
-const EVENT_INITIAL_COINS = 200;
-const EVENT_ORDER_COUNT = 3;
-const EVENT_BOARD_SIZE = 16;
-const EVENT_SPAWN_COST = 8;
-const EVENT_SPAWN_COOLDOWN = 3;
 const EVENT_SHARDS_KEY = game.id + "-shards";
 const EVENT_HIGH_SCORE_KEY = game.id + "-event-highscore";
 
@@ -130,34 +153,7 @@ const TUTORIAL_STEPS: { step: TutorialStep; title: string; description: string; 
   }
 ];
 
-const DESSERTS = [
-  { emoji: "🍬", name: "糖果", level: 1, color: "#f9a8d4" },
-  { emoji: "🍪", name: "曲奇", level: 2, color: "#fbbf24" },
-  { emoji: "🍩", name: "甜甜圈", level: 3, color: "#fb923c" },
-  { emoji: "🧁", name: "纸杯蛋糕", level: 4, color: "#f472b6" },
-  { emoji: "🍰", name: "蛋糕", level: 5, color: "#ec4899" },
-  { emoji: "🍮", name: "布丁", level: 6, color: "#a855f7" },
-  { emoji: "🎂", name: "生日蛋糕", level: 7, color: "#8b5cf6" },
-  { emoji: "🍨", name: "冰淇淋", level: 8, color: "#06b6d4" },
-  { emoji: "🥧", name: "派", level: 9, color: "#10b981" },
-  { emoji: "🍫", name: "巧克力", level: 10, color: "#78350f" },
-];
-
-const BOARD_SIZE = 25;
-const STORAGE_KEY = game.id + "-save";
-const OFFLINE_DATA_KEY = game.id + "-offline";
 const POINTER_MOVE_THRESHOLD = 5;
-const MAX_ORDERS = 3;
-const MIN_ORDER_ITEMS = 1;
-const MAX_ORDER_ITEMS = 3;
-const MAX_OFFLINE_HOURS = 8;
-const BASE_EARNINGS_PER_MINUTE = 2;
-const SPAWN_COST = 10;
-const SPAWN_COOLDOWN_SECONDS = 5;
-const SPAWN_MIN_LEVEL = 1;
-const SPAWN_MAX_LEVEL = 3;
-const INITIAL_COINS = 50;
-const INITIAL_SPAWN_COUNT = 6;
 let orderIdCounter = 0;
 
 interface GameState {
@@ -364,10 +360,6 @@ function saveOfflineData(data: OfflineData): void {
   localStorage.setItem(OFFLINE_DATA_KEY, JSON.stringify(data));
 }
 
-function calculateBaseEarningsRate(maxLevel: number): number {
-  return BASE_EARNINGS_PER_MINUTE * maxLevel;
-}
-
 function hasUnclaimedReward(): boolean {
   const offlineData = loadOfflineData();
   if (!offlineData || offlineData.lastLeaveTime === 0) return false;
@@ -491,7 +483,7 @@ function generateOrder(unlockedLevels: number[]): Order {
 
   for (const [level, count] of levelCounts) {
     items.push({ level, count, collected: 0 });
-    totalReward += level * count * 15;
+    totalReward += calculateOrderItemReward(level, count);
   }
 
   return {
@@ -624,17 +616,14 @@ function generateEventOrders(): EventOrder[] {
       const count = Math.floor(Math.random() * 2) + 1;
       levelCounts.set(level, (levelCounts.get(level) || 0) + count);
     }
-    let coinReward = 0;
-    let shardReward = 0;
     for (const [level, count] of levelCounts) {
       items.push({ level, count, collected: 0 });
-      coinReward += level * count * 25;
-      shardReward += level * count;
     }
+    const eventReward = calculateEventOrderReward(items);
     orders.push({
       id: i + 1,
       items,
-      reward: { coins: coinReward, shards: Math.ceil(shardReward / 3) },
+      reward: eventReward,
       completed: false,
     });
   }
@@ -646,12 +635,13 @@ function calculateEventResult(
   eventCoins: number,
   eventShardsEarned: number
 ): EventResult {
-  const baseCoins = eventCoins;
-  const mergeBonus = stats.merges * 5;
-  const orderBonus = stats.ordersCompleted * 50;
-  const levelBonus = (stats.maxLevel - 1) * 30;
-  const totalCoins = baseCoins + mergeBonus + orderBonus + levelBonus;
-  const totalShards = eventShardsEarned + Math.floor(stats.maxLevel / 2) + stats.ordersCompleted;
+  const totals = calculateEventResultImpl(
+    stats.merges,
+    stats.ordersCompleted,
+    stats.maxLevel,
+    eventCoins,
+    eventShardsEarned
+  );
 
   let rank: "S" | "A" | "B" | "C" = "C";
   const score = stats.merges * 10 + stats.ordersCompleted * 50 + stats.maxLevel * 20;
@@ -660,8 +650,8 @@ function calculateEventResult(
   else if (score >= 100) rank = "B";
 
   return {
-    coins: totalCoins,
-    shards: totalShards,
+    coins: totals.coins,
+    shards: totals.shards,
     maxLevel: stats.maxLevel,
     merges: stats.merges,
     ordersCompleted: stats.ordersCompleted,
@@ -1238,7 +1228,7 @@ function App(): React.ReactElement {
         setEventStepsLeft((prev) => prev + 1);
         return false;
       } else {
-        const coinReward = newLevel * 15;
+        const coinReward = calculateMergeReward(newLevel, true);
         const newBoard = [...eventBoardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
@@ -1535,7 +1525,7 @@ function App(): React.ReactElement {
         triggerFailFeedback([sourceIndex, targetIndex]);
         return false;
       } else {
-        const coinReward = newLevel * 10;
+        const coinReward = calculateMergeReward(newLevel, false);
         const newBoard = [...boardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
@@ -2457,6 +2447,7 @@ function App(): React.ReactElement {
               <small>🎯 限时活动</small>
               <strong className="event-entry-text">点击进入 →</strong>
             </article>
+            <SimulationPanel currentMaxLevel={maxLevel} currentCoins={coins} />
             <article className="save-entry-article" onClick={() => setShowSavePanel(true)}>
               <small>💾 存档管理</small>
               <strong className="save-entry-text">
