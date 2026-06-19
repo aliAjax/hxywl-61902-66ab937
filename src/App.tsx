@@ -51,6 +51,7 @@ interface GameState {
   coins: number;
   maxLevel: number;
   unlockedLevels: number[];
+  unlockTimes: { [key: number]: string };
 }
 
 interface OrderItem {
@@ -93,6 +94,7 @@ function loadGameState(): GameState {
         coins: parsed.coins || 0,
         maxLevel: parsed.maxLevel || 1,
         unlockedLevels: parsed.unlockedLevels || [1],
+        unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
       };
     }
   } catch (e) {
@@ -103,6 +105,7 @@ function loadGameState(): GameState {
     coins: 0,
     maxLevel: 1,
     unlockedLevels: [1],
+    unlockTimes: { 1: new Date().toISOString() },
   };
 }
 
@@ -110,20 +113,34 @@ function saveGameState(state: GameState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function mergeDuplicateLevels(items: OrderItem[]): OrderItem[] {
+  const levelMap = new Map<number, number>();
+  for (const item of items) {
+    const current = levelMap.get(item.level) || 0;
+    levelMap.set(item.level, current + item.count);
+  }
+  return Array.from(levelMap.entries()).map(([level, count]) => ({
+    level,
+    count,
+    collected: 0,
+  }));
+}
+
 function generateOrder(unlockedLevels: number[]): Order {
-  const numItems = Math.floor(Math.random() * (MAX_ORDER_ITEMS - MIN_ORDER_ITEMS + 1)) + MIN_ORDER_ITEMS;
+  const actualMaxItems = Math.min(MAX_ORDER_ITEMS, unlockedLevels.length);
+  const actualMinItems = Math.min(MIN_ORDER_ITEMS, actualMaxItems);
+  const numItems = Math.floor(Math.random() * (actualMaxItems - actualMinItems + 1)) + actualMinItems;
   const items: OrderItem[] = [];
   let totalReward = 0;
-  const usedLevels = new Set<number>();
+  const levelCounts = new Map<number, number>();
 
   for (let i = 0; i < numItems; i++) {
-    let level: number;
-    do {
-      level = unlockedLevels[Math.floor(Math.random() * unlockedLevels.length)];
-    } while (usedLevels.has(level) && usedLevels.size < unlockedLevels.length);
-    
-    usedLevels.add(level);
+    const level = unlockedLevels[Math.floor(Math.random() * unlockedLevels.length)];
     const count = Math.floor(Math.random() * 2) + 1;
+    levelCounts.set(level, (levelCounts.get(level) || 0) + count);
+  }
+
+  for (const [level, count] of levelCounts) {
     items.push({ level, count, collected: 0 });
     totalReward += level * count * 15;
   }
@@ -161,8 +178,42 @@ function removeDessertsFromBoard(board: (number | null)[], level: number, count:
   return newBoard;
 }
 
+function getOrderLevelTotals(order: Order): Map<number, number> {
+  const totals = new Map<number, number>();
+  for (const item of order.items) {
+    totals.set(item.level, (totals.get(item.level) || 0) + item.count);
+  }
+  return totals;
+}
+
 function canSubmitOrder(board: (number | null)[], order: Order): boolean {
-  return order.items.every(item => countDessertsOnBoard(board, item.level) >= item.count);
+  const levelTotals = getOrderLevelTotals(order);
+  for (const [level, count] of levelTotals) {
+    if (countDessertsOnBoard(board, level) < count) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function formatUnlockTime(isoString: string): string {
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return "刚刚解锁";
+  if (diffMins < 60) return `${diffMins}分钟前解锁`;
+  if (diffHours < 24) return `${diffHours}小时前解锁`;
+  if (diffDays < 7) return `${diffDays}天前解锁`;
+
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = date.getHours().toString().padStart(2, '0');
+  const minute = date.getMinutes().toString().padStart(2, '0');
+  return `${month}月${day}日 ${hour}:${minute}解锁`;
 }
 
 function submitOrder(board: (number | null)[], order: Order): { newBoard: (number | null)[]; success: boolean } {
@@ -170,9 +221,10 @@ function submitOrder(board: (number | null)[], order: Order): { newBoard: (numbe
     return { newBoard: board, success: false };
   }
 
+  const levelTotals = getOrderLevelTotals(order);
   let newBoard = [...board];
-  for (const item of order.items) {
-    newBoard = removeDessertsFromBoard(newBoard, item.level, item.count);
+  for (const [level, count] of levelTotals) {
+    newBoard = removeDessertsFromBoard(newBoard, level, count);
   }
   return { newBoard, success: true };
 }
@@ -183,8 +235,10 @@ function App(): React.ReactElement {
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
   const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
+  const [unlockTimes, setUnlockTimes] = useState<{ [key: number]: string }>(initialState.unlockTimes);
   const [orders, setOrders] = useState<Order[]>(generateOrders(initialState.unlockedLevels));
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedDessert, setSelectedDessert] = useState<number | null>(null);
 
   const [drag, setDrag] = useState<DragState>({
     isDragging: false,
@@ -208,6 +262,7 @@ function App(): React.ReactElement {
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
   const unlockedLevelsRef = useRef<number[]>(unlockedLevels);
+  const unlockTimesRef = useRef<{ [key: number]: string }>(unlockTimes);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = useRef<DragState>(drag);
   const hoverRef = useRef<number | null>(null);
@@ -216,6 +271,7 @@ function App(): React.ReactElement {
   coinsRef.current = coins;
   maxLevelRef.current = maxLevel;
   unlockedLevelsRef.current = unlockedLevels;
+  unlockTimesRef.current = unlockTimes;
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
 
@@ -225,8 +281,9 @@ function App(): React.ReactElement {
       coins,
       maxLevel,
       unlockedLevels,
+      unlockTimes,
     });
-  }, [board, coins, maxLevel, unlockedLevels]);
+  }, [board, coins, maxLevel, unlockedLevels, unlockTimes]);
 
   const showToast = useCallback((message: string): void => {
     setToast(message);
@@ -334,6 +391,10 @@ function App(): React.ReactElement {
         }
         if (!unlockedLevelsRef.current.includes(newLevel)) {
           setUnlockedLevels((prev: number[]) => [...prev, newLevel].sort((a: number, b: number) => a - b));
+          setUnlockTimes((prev: { [key: number]: string }) => ({
+            ...prev,
+            [newLevel]: new Date().toISOString(),
+          }));
         }
         return true;
       }
@@ -627,6 +688,57 @@ function App(): React.ReactElement {
     <main className="game-shell">
       {toast && <div className="toast">{toast}</div>}
 
+      {selectedDessert !== null && (
+        <div className="modal-overlay" onClick={() => setSelectedDessert(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSelectedDessert(null)}>×</button>
+            {(() => {
+              const dessert = DESSERTS[selectedDessert - 1];
+              const unlockTime = unlockTimes[selectedDessert];
+              return (
+                <>
+                  <div
+                    className="modal-icon"
+                    style={{ background: `linear-gradient(145deg, ${dessert.color}88, ${dessert.color}44)` }}
+                  >
+                    <span className="modal-emoji">{dessert.emoji}</span>
+                  </div>
+                  <h2 className="modal-name">{dessert.name}</h2>
+                  <div className="modal-level">等级 Lv.{dessert.level}</div>
+                  <div className="modal-divider"></div>
+                  <div className="modal-info">
+                    <div className="info-row">
+                      <span className="info-label">解锁状态</span>
+                      <span className="info-value unlocked-text">✅ 已解锁</span>
+                    </div>
+                    <div className="info-row">
+                      <span className="info-label">首次解锁</span>
+                      <span className="info-value">
+                        {unlockTime ? new Date(unlockTime).toLocaleString('zh-CN') : '-'}
+                      </span>
+                    </div>
+                    <div className="info-row">
+                      <span className="info-label">合成价值</span>
+                      <span className="info-value">+{dessert.level * 10} 💰</span>
+                    </div>
+                    <div className="info-row">
+                      <span className="info-label">订单价值</span>
+                      <span className="info-value">+{dessert.level * 15} 💰/个</span>
+                    </div>
+                  </div>
+                  <p className="modal-description">
+                    {dessert.level <= 2 && "基础甜品，通过合成两个相同的低级甜品获得。"}
+                    {dessert.level > 2 && dessert.level <= 5 && "中级甜品，需要多次合成才能获得，价值更高。"}
+                    {dessert.level > 5 && dessert.level <= 8 && "高级甜品，非常稀有，是合成大师的象征。"}
+                    {dessert.level > 8 && "传说级甜品，只有最顶尖的合成师才能解锁！"}
+                  </p>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {drag.isDragging && drag.sourceIndex !== null && drag.hasMoved && board[drag.sourceIndex] && (
         <div
           className="drag-floating-element"
@@ -705,60 +817,91 @@ function App(): React.ReactElement {
                 <p className="empty-orders-hint">合成更多甜品解锁新订单吧！</p>
               </div>
             ) : (
-              orders.map((order: Order) => (
-                <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
-                  <div className="order-items">
-                    {order.items.map((item: OrderItem, idx: number) => {
-                      const dessert = DESSERTS[item.level - 1];
-                      const available = countDessertsOnBoard(board, item.level);
-                      const hasEnough = available >= item.count;
-                      return (
-                        <div key={idx} className={`order-item-row ${hasEnough ? "available" : "unavailable"}`}>
-                          <span className="order-dessert">
-                            <span className="order-emoji">{dessert?.emoji}</span>
-                            <span className="order-name">{dessert?.name}</span>
-                          </span>
-                          <span className="order-count">
-                            <span className={hasEnough ? "count-ok" : "count-missing"}>
-                              {available}/{item.count}
+              orders.map((order: Order) => {
+                const levelTotals = getOrderLevelTotals(order);
+                const mergedItems = Array.from(levelTotals.entries()).map(([level, count]) => ({ level, count }));
+                return (
+                  <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
+                    <div className="order-items">
+                      {mergedItems.map(({ level, count }, idx: number) => {
+                        const dessert = DESSERTS[level - 1];
+                        const available = countDessertsOnBoard(board, level);
+                        const hasEnough = available >= count;
+                        return (
+                          <div key={idx} className={`order-item-row ${hasEnough ? "available" : "unavailable"}`}>
+                            <span className="order-dessert">
+                              <span className="order-emoji">{dessert?.emoji}</span>
+                              <span className="order-name">{dessert?.name}</span>
                             </span>
-                          </span>
-                        </div>
-                      );
-                    })}
+                            <span className="order-count">
+                              <span className={hasEnough ? "count-ok" : "count-missing"}>
+                                {available}/{count}
+                              </span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="order-footer">
+                      <span className="order-reward">+{order.reward}💰</span>
+                      {!order.completed && (
+                        <button
+                          className={`submit-btn ${canSubmitOrder(board, order) ? "can-submit" : "cannot-submit"}`}
+                          onClick={() => handleSubmitOrder(order)}
+                          disabled={!canSubmitOrder(board, order)}
+                        >
+                          {canSubmitOrder(board, order) ? "✅ 提交" : "❌ 材料不足"}
+                        </button>
+                      )}
+                      {order.completed && (
+                        <span className="completed-badge">🎉 已完成</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="order-footer">
-                    <span className="order-reward">+{order.reward}💰</span>
-                    {!order.completed && (
-                      <button
-                        className={`submit-btn ${canSubmitOrder(board, order) ? "can-submit" : "cannot-submit"}`}
-                        onClick={() => handleSubmitOrder(order)}
-                        disabled={!canSubmitOrder(board, order)}
-                      >
-                        {canSubmitOrder(board, order) ? "✅ 提交" : "❌ 材料不足"}
-                      </button>
-                    )}
-                    {order.completed && (
-                      <span className="completed-badge">🎉 已完成</span>
-                    )}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
           <div className="collection-panel">
-            <h3>📖 甜品图鉴</h3>
+            <div className="collection-header">
+              <h3>📖 甜品图鉴</h3>
+              <span className="collection-progress">
+                {unlockedLevels.length}/{DESSERTS.length}
+              </span>
+            </div>
             <div className="collection-grid">
-              {DESSERTS.map((dessert) => (
-                <div
-                  key={dessert.level}
-                  className={`collection-item ${unlockedLevels.includes(dessert.level) ? "unlocked" : "locked"}`}
-                  title={dessert.name}
-                >
-                  {unlockedLevels.includes(dessert.level) ? dessert.emoji : "❓"}
-                </div>
-              ))}
+              {DESSERTS.map((dessert) => {
+                const isUnlocked = unlockedLevels.includes(dessert.level);
+                const unlockTime = unlockTimes[dessert.level];
+                return (
+                  <div
+                    key={dessert.level}
+                    className={`collection-item ${isUnlocked ? "unlocked" : "locked"}`}
+                    onClick={() => isUnlocked && setSelectedDessert(dessert.level)}
+                    title={isUnlocked ? `${dessert.name} - 点击查看详情` : "??? 未解锁"}
+                  >
+                    <div className="collection-item-inner">
+                      <div
+                        className="collection-icon"
+                        style={isUnlocked ? { background: `linear-gradient(145deg, ${dessert.color}88, ${dessert.color}44)` } : {}}
+                      >
+                        <span className="collection-emoji">{isUnlocked ? dessert.emoji : "❓"}</span>
+                      </div>
+                      <div className="collection-info">
+                        <div className="collection-level">Lv.{dessert.level}</div>
+                        <div className="collection-name">{isUnlocked ? dessert.name : "???"}</div>
+                        {isUnlocked && unlockTime && (
+                          <div className="collection-time">{formatUnlockTime(unlockTime)}</div>
+                        )}
+                        {!isUnlocked && (
+                          <div className="collection-locked-hint">未解锁</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -774,8 +917,8 @@ function App(): React.ReactElement {
         <h2>游戏说明</h2>
         <p>
           🎮 <strong>玩法：</strong>拖拽相同等级的甜品到一起合成更高级甜品。每合成一次获得金币，等级越高金币越多。<br />
-          � <strong>订单：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
-          �💾 <strong>存档：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
+          📋 <strong>订单：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
+          💾 <strong>存档：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
           🎯 <strong>目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部甜品图鉴！
         </p>
       </section>
