@@ -25,6 +25,38 @@ const game = {
   "mode": "merge"
 };
 
+const EVENT_MAX_STEPS = 25;
+const EVENT_INITIAL_COINS = 200;
+const EVENT_ORDER_COUNT = 3;
+const EVENT_BOARD_SIZE = 16;
+const EVENT_SPAWN_COST = 8;
+const EVENT_SPAWN_COOLDOWN = 3;
+const EVENT_SHARDS_KEY = game.id + "-shards";
+const EVENT_HIGH_SCORE_KEY = game.id + "-event-highscore";
+
+interface EventOrder {
+  id: number;
+  items: OrderItem[];
+  reward: { coins: number; shards: number };
+  completed: boolean;
+}
+
+interface EventStats {
+  merges: number;
+  ordersCompleted: number;
+  maxLevel: number;
+  totalCoinReward: number;
+}
+
+interface EventResult {
+  coins: number;
+  shards: number;
+  maxLevel: number;
+  merges: number;
+  ordersCompleted: number;
+  rank: "S" | "A" | "B" | "C";
+}
+
 const TUTORIAL_KEY = game.id + "-tutorial";
 
 type TutorialStep = 
@@ -446,6 +478,97 @@ function submitOrder(board: (number | null)[], order: Order): { newBoard: (numbe
   return { newBoard, success: true };
 }
 
+function loadEventShards(): number {
+  try {
+    const saved = localStorage.getItem(EVENT_SHARDS_KEY);
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+  } catch (e) {
+    console.error("Failed to load event shards:", e);
+  }
+  return 0;
+}
+
+function saveEventShards(shards: number): void {
+  localStorage.setItem(EVENT_SHARDS_KEY, String(shards));
+}
+
+function loadEventHighScore(): number {
+  try {
+    const saved = localStorage.getItem(EVENT_HIGH_SCORE_KEY);
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+  } catch (e) {
+    console.error("Failed to load event high score:", e);
+  }
+  return 0;
+}
+
+function saveEventHighScore(score: number): void {
+  localStorage.setItem(EVENT_HIGH_SCORE_KEY, String(score));
+}
+
+function generateEventOrders(): EventOrder[] {
+  const orders: EventOrder[] = [];
+  for (let i = 0; i < EVENT_ORDER_COUNT; i++) {
+    const levelRange = Math.min(5, 3 + Math.floor(i));
+    const numItems = Math.floor(Math.random() * 2) + 1;
+    const items: OrderItem[] = [];
+    const levelCounts = new Map<number, number>();
+    for (let j = 0; j < numItems; j++) {
+      const level = Math.floor(Math.random() * levelRange) + 2;
+      const count = Math.floor(Math.random() * 2) + 1;
+      levelCounts.set(level, (levelCounts.get(level) || 0) + count);
+    }
+    let coinReward = 0;
+    let shardReward = 0;
+    for (const [level, count] of levelCounts) {
+      items.push({ level, count, collected: 0 });
+      coinReward += level * count * 25;
+      shardReward += level * count;
+    }
+    orders.push({
+      id: i + 1,
+      items,
+      reward: { coins: coinReward, shards: Math.ceil(shardReward / 3) },
+      completed: false,
+    });
+  }
+  return orders;
+}
+
+function calculateEventResult(
+  stats: EventStats,
+  eventCoins: number,
+  eventShardsEarned: number
+): EventResult {
+  const baseCoins = eventCoins;
+  const mergeBonus = stats.merges * 5;
+  const orderBonus = stats.ordersCompleted * 50;
+  const levelBonus = (stats.maxLevel - 1) * 30;
+  const totalCoins = baseCoins + mergeBonus + orderBonus + levelBonus;
+  const totalShards = eventShardsEarned + Math.floor(stats.maxLevel / 2) + stats.ordersCompleted;
+
+  let rank: "S" | "A" | "B" | "C" = "C";
+  const score = stats.merges * 10 + stats.ordersCompleted * 50 + stats.maxLevel * 20;
+  if (score >= 300) rank = "S";
+  else if (score >= 200) rank = "A";
+  else if (score >= 100) rank = "B";
+
+  return {
+    coins: totalCoins,
+    shards: totalShards,
+    maxLevel: stats.maxLevel,
+    merges: stats.merges,
+    ordersCompleted: stats.ordersCompleted,
+    rank,
+  };
+}
+
 function App(): React.ReactElement {
   const initialState = loadGameState();
   const initialTutorial = loadTutorialState();
@@ -460,6 +583,22 @@ function App(): React.ReactElement {
   const [spawnCooldown, setSpawnCooldown] = useState<number>(0);
   const spawnCooldownRef = useRef<number>(0);
   const spawnTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [eventMode, setEventMode] = useState<boolean>(false);
+  const [eventBoard, setEventBoard] = useState<(number | null)[]>([]);
+  const [eventCoins, setEventCoins] = useState<number>(EVENT_INITIAL_COINS);
+  const [eventStepsLeft, setEventStepsLeft] = useState<number>(EVENT_MAX_STEPS);
+  const [eventOrders, setEventOrders] = useState<EventOrder[]>([]);
+  const [eventStats, setEventStats] = useState<EventStats>({ merges: 0, ordersCompleted: 0, maxLevel: 1, totalCoinReward: 0 });
+  const [eventShards, setEventShards] = useState<number>(loadEventShards());
+  const [eventShardsEarned, setEventShardsEarned] = useState<number>(0);
+  const [eventSpawnCooldown, setEventSpawnCooldown] = useState<number>(0);
+  const eventSpawnCooldownRef = useRef<number>(0);
+  const eventSpawnTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [showEventResult, setShowEventResult] = useState<boolean>(false);
+  const [eventResult, setEventResult] = useState<EventResult | null>(null);
+  const [eventHighScore, setEventHighScore] = useState<number>(loadEventHighScore());
+  const [showEventEntry, setShowEventEntry] = useState<boolean>(false);
 
   const [drag, setDrag] = useState<DragState>({
     isDragging: false,
@@ -495,6 +634,13 @@ function App(): React.ReactElement {
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = useRef<DragState>(drag);
   const hoverRef = useRef<number | null>(null);
+  const eventBoardRef = useRef<(number | null)[]>(eventBoard);
+  const eventCoinsRef = useRef<number>(eventCoins);
+  const eventStepsLeftRef = useRef<number>(eventStepsLeft);
+  const eventStatsRef = useRef<EventStats>(eventStats);
+  const eventOrdersRef = useRef<EventOrder[]>(eventOrders);
+  const eventBoardRefEl = useRef<HTMLDivElement>(null);
+  const eventCellRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   boardRef.current = board;
   coinsRef.current = coins;
@@ -504,6 +650,12 @@ function App(): React.ReactElement {
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
   spawnCooldownRef.current = spawnCooldown;
+  eventBoardRef.current = eventBoard;
+  eventCoinsRef.current = eventCoins;
+  eventStepsLeftRef.current = eventStepsLeft;
+  eventStatsRef.current = eventStats;
+  eventOrdersRef.current = eventOrders;
+  eventSpawnCooldownRef.current = eventSpawnCooldown;
 
   const showToast = useCallback((message: string): void => {
     setToast(message);
@@ -523,6 +675,10 @@ function App(): React.ReactElement {
   useEffect(() => {
     saveTutorialState(tutorial);
   }, [tutorial]);
+
+  useEffect(() => {
+    saveEventShards(eventShards);
+  }, [eventShards]);
 
   const getCurrentTutorialStep = useCallback(() => {
     return TUTORIAL_STEPS.find(s => s.step === tutorial.currentStep) || null;
@@ -614,6 +770,236 @@ function App(): React.ReactElement {
     setShowTutorial(false);
     showToast("👌 已跳过新手引导");
   }, [showToast]);
+
+  const startEvent = useCallback((): void => {
+    const initialEventBoard = Array(EVENT_BOARD_SIZE).fill(null);
+    for (let i = 0; i < 4; i++) {
+      initialEventBoard[i] = 1;
+    }
+    setEventBoard(initialEventBoard);
+    setEventCoins(EVENT_INITIAL_COINS);
+    setEventStepsLeft(EVENT_MAX_STEPS);
+    setEventOrders(generateEventOrders());
+    setEventStats({ merges: 0, ordersCompleted: 0, maxLevel: 1, totalCoinReward: 0 });
+    setEventShardsEarned(0);
+    setEventSpawnCooldown(0);
+    setShowEventEntry(false);
+    setEventMode(true);
+    showToast("🎮 限时挑战开始！加油！");
+  }, [showToast]);
+
+  const endEvent = useCallback((): void => {
+    const result = calculateEventResult(eventStatsRef.current, eventCoinsRef.current, eventShardsEarned);
+    setEventResult(result);
+    setShowEventResult(true);
+
+    setCoins((prev: number) => prev + result.coins);
+    setEventShards((prev: number) => prev + result.shards);
+
+    const score = eventStatsRef.current.merges * 10 + eventStatsRef.current.ordersCompleted * 50 + eventStatsRef.current.maxLevel * 20;
+    if (score > eventHighScore) {
+      setEventHighScore(score);
+      saveEventHighScore(score);
+    }
+
+    setEventMode(false);
+  }, [eventShardsEarned, eventHighScore]);
+
+  const exitEvent = useCallback((): void => {
+    setEventMode(false);
+    setEventBoard([]);
+    showToast("👋 已退出活动，主线进度已保留");
+  }, [showToast]);
+
+  const consumeEventStep = useCallback((): boolean => {
+    if (eventStepsLeftRef.current <= 0) {
+      showToast("⏰ 步数已用完！");
+      return false;
+    }
+    setEventStepsLeft((prev) => prev - 1);
+    return true;
+  }, [showToast]);
+
+  const eventStartSpawnCooldown = useCallback((): void => {
+    if (eventSpawnTimerRef.current) {
+      clearInterval(eventSpawnTimerRef.current);
+    }
+    setEventSpawnCooldown(EVENT_SPAWN_COOLDOWN);
+    eventSpawnCooldownRef.current = EVENT_SPAWN_COOLDOWN;
+    eventSpawnTimerRef.current = setInterval(() => {
+      setEventSpawnCooldown((prev) => {
+        const next = prev - 1;
+        eventSpawnCooldownRef.current = next;
+        if (next <= 0) {
+          if (eventSpawnTimerRef.current) {
+            clearInterval(eventSpawnTimerRef.current);
+            eventSpawnTimerRef.current = null;
+          }
+          return 0;
+        }
+        return next;
+      });
+    }, 1000);
+  }, []);
+
+  const eventSpawnDessert = useCallback((): boolean => {
+    if (eventSpawnCooldownRef.current > 0) {
+      showToast(`⏳ 冷却中，请等待 ${eventSpawnCooldownRef.current} 秒`);
+      return false;
+    }
+    if (!consumeEventStep()) return false;
+    if (eventCoinsRef.current < EVENT_SPAWN_COST) {
+      showToast(`💰 金币不足！需要 ${EVENT_SPAWN_COST} 金币`);
+      setEventStepsLeft((prev) => prev + 1);
+      return false;
+    }
+
+    const level = Math.floor(Math.random() * 3) + 1;
+    const emptyIndices: number[] = [];
+    eventBoardRef.current.forEach((cell, index) => {
+      if (cell === null) emptyIndices.push(index);
+    });
+    if (emptyIndices.length === 0) {
+      showToast("🧹 棋盘已满！请合并甜品");
+      setEventStepsLeft((prev) => prev + 1);
+      return false;
+    }
+
+    const emptyIndex = emptyIndices[Math.floor(Math.random() * emptyIndices.length)];
+    setEventCoins((prev) => prev - EVENT_SPAWN_COST);
+    const newBoard = [...eventBoardRef.current];
+    newBoard[emptyIndex] = level;
+    setEventBoard(newBoard);
+    eventStartSpawnCooldown();
+
+    const dessert = DESSERTS[level - 1];
+    showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${EVENT_SPAWN_COST}💰`);
+    return true;
+  }, [consumeEventStep, showToast, eventStartSpawnCooldown]);
+
+  const eventPerformMerge = useCallback((sourceIndex: number, targetIndex: number): boolean => {
+    if (sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= EVENT_BOARD_SIZE
+        || targetIndex < 0 || targetIndex >= EVENT_BOARD_SIZE) {
+      return false;
+    }
+
+    const sourceLevel = eventBoardRef.current[sourceIndex];
+    const targetLevel = eventBoardRef.current[targetIndex];
+
+    if (sourceLevel === null) return false;
+
+    if (targetLevel === null) {
+      if (!consumeEventStep()) return false;
+      const newBoard = [...eventBoardRef.current];
+      newBoard[targetIndex] = sourceLevel;
+      newBoard[sourceIndex] = null;
+      setEventBoard(newBoard);
+      showToast("📦 甜品已移动");
+      return true;
+    }
+
+    if (sourceLevel === targetLevel) {
+      if (!consumeEventStep()) return false;
+      const newLevel = sourceLevel + 1;
+      if (newLevel > DESSERTS.length) {
+        showToast("⭐ 已达到最高等级！");
+        setEventStepsLeft((prev) => prev + 1);
+        return false;
+      } else {
+        const coinReward = newLevel * 15;
+        const newBoard = [...eventBoardRef.current];
+        newBoard[targetIndex] = newLevel;
+        newBoard[sourceIndex] = null;
+        setEventBoard(newBoard);
+        setEventCoins((prev) => prev + coinReward);
+
+        setEventStats((prev) => ({
+          ...prev,
+          merges: prev.merges + 1,
+          maxLevel: Math.max(prev.maxLevel, newLevel),
+          totalCoinReward: prev.totalCoinReward + coinReward,
+        }));
+
+        showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
+        return true;
+      }
+    } else {
+      showToast("❌ 等级不同，无法合成！");
+      return false;
+    }
+  }, [consumeEventStep, showToast]);
+
+  const eventCanSubmitOrder = useCallback((order: EventOrder): boolean => {
+    for (const item of order.items) {
+      const count = eventBoardRef.current.filter(cell => cell === item.level).length;
+      if (count < item.count) return false;
+    }
+    return true;
+  }, []);
+
+  const eventSubmitOrder = useCallback((order: EventOrder): void => {
+    if (order.completed) {
+      showToast("该订单已完成！");
+      return;
+    }
+    if (!eventCanSubmitOrder(order)) {
+      showToast("❌ 棋盘中的甜品不足，无法提交！");
+      return;
+    }
+    if (!consumeEventStep()) return;
+
+    let newBoard = [...eventBoardRef.current];
+    for (const item of order.items) {
+      let removed = 0;
+      for (let i = 0; i < newBoard.length && removed < item.count; i++) {
+        if (newBoard[i] === item.level) {
+          newBoard[i] = null;
+          removed++;
+        }
+      }
+    }
+
+    setEventBoard(newBoard);
+    setEventCoins((prev) => prev + order.reward.coins);
+    setEventShardsEarned((prev) => prev + order.reward.shards);
+    setEventOrders((prev) =>
+      prev.map((o) => o.id === order.id ? { ...o, completed: true } : o)
+    );
+    setEventStats((prev) => ({
+      ...prev,
+      ordersCompleted: prev.ordersCompleted + 1,
+      totalCoinReward: prev.totalCoinReward + order.reward.coins,
+    }));
+
+    showToast(`🎉 订单完成！+${order.reward.coins}💰 +${order.reward.shards}💎`);
+  }, [eventCanSubmitOrder, consumeEventStep, showToast]);
+
+  const eventOrganizeBoard = useCallback((): void => {
+    if (!consumeEventStep()) return;
+    const newBoard = Array(EVENT_BOARD_SIZE).fill(null);
+    const nonNullCells = eventBoardRef.current.filter((cell) => cell !== null) as number[];
+    const levelCounts = new Map<number, number>();
+    nonNullCells.forEach((level) => {
+      levelCounts.set(level, (levelCounts.get(level) || 0) + 1);
+    });
+    const sortedLevels = Array.from(levelCounts.entries()).sort((a, b) => a[0] - b[0]);
+    let currentIndex = 0;
+    for (const [level, count] of sortedLevels) {
+      for (let i = 0; i < count; i++) {
+        newBoard[currentIndex++] = level;
+      }
+    }
+    setEventBoard(newBoard);
+    showToast("🧹 整理完成！");
+  }, [consumeEventStep, showToast]);
+
+  useEffect(() => {
+    if (eventMode && eventStepsLeft <= 0) {
+      setTimeout(() => {
+        endEvent();
+      }, 500);
+    }
+  }, [eventStepsLeft, eventMode, endEvent]);
 
   const formatOfflineDuration = (minutes: number): string => {
     if (minutes < 60) {
@@ -849,14 +1235,16 @@ function App(): React.ReactElement {
     }
   }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep]);
 
-  const getCellIndexFromPoint = useCallback((clientX: number, clientY: number): number | null => {
-    const cells = cellRefs.current;
+  const getCellIndexFromPoint = useCallback((clientX: number, clientY: number, isEvent: boolean): number | null => {
+    const cells = isEvent ? eventCellRefs.current : cellRefs.current;
+    const boardSize = isEvent ? EVENT_BOARD_SIZE : BOARD_SIZE;
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
       if (!cell) continue;
       const rect = cell.getBoundingClientRect();
       if (clientX >= rect.left && clientX <= rect.right
           && clientY >= rect.top && clientY <= rect.bottom) {
+        if (i >= boardSize) return null;
         return i;
       }
     }
@@ -874,13 +1262,19 @@ function App(): React.ReactElement {
       if (!cellEl) return;
 
       const boardEl = cellEl.closest?.<HTMLDivElement>(".board");
-      if (!boardEl || boardEl !== boardRefEl.current) return;
+      if (!boardEl) return;
+
+      const isEventBoard = boardEl === eventBoardRefEl.current;
+      const isMainBoard = boardEl === boardRefEl.current;
+      if (!isEventBoard && !isMainBoard) return;
 
       const idxStr = cellEl.getAttribute("data-index");
       if (idxStr === null) return;
       const index = Number(idxStr);
-      if (isNaN(index) || index < 0 || index >= BOARD_SIZE) return;
-      if (boardRef.current[index] === null) return;
+      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : BOARD_SIZE;
+      const currentBoard = isEventBoard ? eventBoardRef.current : boardRef.current;
+      if (isNaN(index) || index < 0 || index >= boardSize) return;
+      if (currentBoard[index] === null) return;
 
       e.preventDefault();
       try {
@@ -921,7 +1315,7 @@ function App(): React.ReactElement {
       dragRef.current = updated;
       setDrag(updated);
 
-      const hovered = getCellIndexFromPoint(e.clientX, e.clientY);
+      const hovered = getCellIndexFromPoint(e.clientX, e.clientY, eventMode);
       hoverRef.current = hovered;
       setHoverIndex(hovered);
     };
@@ -935,10 +1329,14 @@ function App(): React.ReactElement {
         (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
       } catch {}
 
-      const targetIndex = getCellIndexFromPoint(e.clientX, e.clientY);
+      const targetIndex = getCellIndexFromPoint(e.clientX, e.clientY, eventMode);
 
       if (d.hasMoved && targetIndex !== null && d.sourceIndex !== null) {
-        performMerge(d.sourceIndex, targetIndex);
+        if (eventMode) {
+          eventPerformMerge(d.sourceIndex, targetIndex);
+        } else {
+          performMerge(d.sourceIndex, targetIndex);
+        }
       } else if (!d.hasMoved && d.sourceIndex !== null) {
         showToast("💡 提示：拖动该甜品到相同等级上即可合成");
       }
@@ -985,12 +1383,24 @@ function App(): React.ReactElement {
       const cellEl = target.closest?.<HTMLDivElement>(".cell");
       if (!cellEl) return;
       const boardEl = cellEl.closest?.<HTMLDivElement>(".board");
-      if (!boardEl || boardEl !== boardRefEl.current) return;
+      if (!boardEl) return;
+
+      const isEventBoard = boardEl === eventBoardRefEl.current;
+      const isMainBoard = boardEl === boardRefEl.current;
+      if (!isEventBoard && !isMainBoard) return;
+
       const idxStr = cellEl.getAttribute("data-index");
       if (idxStr === null) return;
       const index = Number(idxStr);
-      if (isNaN(index) || index < 0 || index >= BOARD_SIZE) return;
-      if (boardRef.current[index] !== null) return;
+      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : BOARD_SIZE;
+      const currentBoard = isEventBoard ? eventBoardRef.current : boardRef.current;
+      if (isNaN(index) || index < 0 || index >= boardSize) return;
+      if (currentBoard[index] !== null) return;
+
+      if (isEventBoard) {
+        eventSpawnDessert();
+        return;
+      }
 
       if (spawnCooldownRef.current > 0) {
         showToast(`⏳ 冷却中，请等待 ${spawnCooldownRef.current} 秒`);
@@ -1031,7 +1441,7 @@ function App(): React.ReactElement {
       window.removeEventListener("pointercancel", handleGlobalPointerCancel);
       document.removeEventListener("click", handleGlobalClick, true);
     };
-  }, [getCellIndexFromPoint, performMerge, showToast, advanceTutorialStep]);
+  }, [getCellIndexFromPoint, performMerge, eventPerformMerge, eventSpawnDessert, showToast, advanceTutorialStep, eventMode]);
 
   const handleSubmitOrder = useCallback((order: Order): void => {
     if (order.completed) {
@@ -1153,6 +1563,27 @@ function App(): React.ReactElement {
     }
     if (feedback.type === "fail" && feedback.indices.includes(index)) {
       classes.push("merge-fail");
+    }
+    return classes.join(" ");
+  };
+
+  const getEventCellClass = (index: number): string => {
+    const classes: string[] = ["cell"];
+    classes.push(eventBoard[index] ? "has-dessert" : "empty");
+
+    if (drag.isDragging && drag.sourceIndex === index) {
+      classes.push("pointer-dragging-source");
+    }
+    if (drag.isDragging && hoverIndex === index && drag.sourceIndex !== index) {
+      const sourceLevel = drag.sourceIndex !== null ? eventBoard[drag.sourceIndex] : null;
+      const targetLevel = eventBoard[index];
+      if (targetLevel === null) {
+        classes.push("pointer-drop-ok");
+      } else if (sourceLevel !== null && sourceLevel === targetLevel) {
+        classes.push("pointer-drop-ok");
+      } else {
+        classes.push("pointer-drop-no");
+      }
     }
     return classes.join(" ");
   };
@@ -1386,17 +1817,115 @@ function App(): React.ReactElement {
         </div>
       )}
 
-      {drag.isDragging && drag.sourceIndex !== null && drag.hasMoved && board[drag.sourceIndex] && (
+      {showEventEntry && !eventMode && (
+        <div className="modal-overlay" onClick={() => setShowEventEntry(false)}>
+          <div className="modal-content event-entry-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowEventEntry(false)}>×</button>
+            <div className="event-entry-icon">🎯</div>
+            <h2 className="event-entry-title">限时合成挑战</h2>
+            <p className="event-entry-subtitle">在限定步数内合成最高级甜品！</p>
+            
+            <div className="event-info-grid">
+              <div className="event-info-item">
+                <span className="event-info-label">🎮 步数限制</span>
+                <span className="event-info-value">{EVENT_MAX_STEPS} 步</span>
+              </div>
+              <div className="event-info-item">
+                <span className="event-info-label">💰 初始金币</span>
+                <span className="event-info-value">{EVENT_INITIAL_COINS}</span>
+              </div>
+              <div className="event-info-item">
+                <span className="event-info-label">💎 图鉴碎片</span>
+                <span className="event-info-value">当前: {eventShards}</span>
+              </div>
+              <div className="event-info-item">
+                <span className="event-info-label">🏆 历史最高分</span>
+                <span className="event-info-value">{eventHighScore}</span>
+              </div>
+            </div>
+
+            <div className="event-rules">
+              <h4>🎮 挑战规则</h4>
+              <ul>
+                <li>每步操作（生成、合成、移动、整理、提交订单）消耗 1 步</li>
+                <li>完成活动订单可获得金币和图鉴碎片奖励</li>
+                <li>合成越高级甜品，最终奖励越丰厚</li>
+                <li>活动棋盘与主线独立，退出不影响主线进度</li>
+              </ul>
+            </div>
+
+            <button className="event-start-btn" onClick={startEvent}>
+              🚀 开始挑战
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showEventResult && eventResult && (
+        <div className="modal-overlay">
+          <div className="modal-content event-result-modal" onClick={(e) => e.stopPropagation()}>
+            <div className={`event-rank-badge rank-${eventResult.rank}`}>
+              {eventResult.rank}
+            </div>
+            <h2 className="event-result-title">挑战结束！</h2>
+            
+            <div className="event-result-stats">
+              <div className="event-result-row">
+                <span>🧁 合成次数</span>
+                <span className="event-result-value">{eventResult.merges}</span>
+              </div>
+              <div className="event-result-row">
+                <span>📋 完成订单</span>
+                <span className="event-result-value">{eventResult.ordersCompleted}</span>
+              </div>
+              <div className="event-result-row">
+                <span>⭐ 最高等级</span>
+                <span className="event-result-value">Lv.{eventResult.maxLevel} {DESSERTS[Math.min(eventResult.maxLevel - 1, DESSERTS.length - 1)]?.emoji}</span>
+              </div>
+            </div>
+
+            <div className="event-result-rewards">
+              <h4>🎁 获得奖励</h4>
+              <div className="event-reward-item">
+                <span>💰 金币</span>
+                <span className="event-reward-coins">+{eventResult.coins}</span>
+              </div>
+              <div className="event-reward-item">
+                <span>💎 图鉴碎片</span>
+                <span className="event-reward-shards">+{eventResult.shards}</span>
+              </div>
+            </div>
+
+            <button className="event-start-btn" onClick={() => setShowEventResult(false)}>
+              太棒了！
+            </button>
+          </div>
+        </div>
+      )}
+
+      {drag.isDragging && drag.sourceIndex !== null && drag.hasMoved && (
         <div
           className="drag-floating-element"
           style={{
             left: drag.currentX - 32,
             top: drag.currentY - 32,
-            background: `linear-gradient(145deg, ${DESSERTS[board[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[board[drag.sourceIndex]! - 1].color}99)`,
+            background: eventMode && eventBoard[drag.sourceIndex]
+              ? `linear-gradient(145deg, ${DESSERTS[eventBoard[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[eventBoard[drag.sourceIndex]! - 1].color}99)`
+              : board[drag.sourceIndex]
+                ? `linear-gradient(145deg, ${DESSERTS[board[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[board[drag.sourceIndex]! - 1].color}99)`
+                : undefined,
           }}
         >
-          <span className="dessert-emoji">{DESSERTS[board[drag.sourceIndex]! - 1].emoji}</span>
-          <span className="dessert-level">Lv.{board[drag.sourceIndex]}</span>
+          <span className="dessert-emoji">
+            {eventMode && eventBoard[drag.sourceIndex]
+              ? DESSERTS[eventBoard[drag.sourceIndex]! - 1].emoji
+              : board[drag.sourceIndex]
+                ? DESSERTS[board[drag.sourceIndex]! - 1].emoji
+                : null}
+          </span>
+          <span className="dessert-level">
+            Lv.{eventMode ? eventBoard[drag.sourceIndex] : board[drag.sourceIndex]}
+          </span>
         </div>
       )}
 
@@ -1407,20 +1936,48 @@ function App(): React.ReactElement {
       </section>
 
       <section className="hud">
-        {game.stats.map((stat: string, index: number) => (
-          <article key={stat}>
-            <small>{stat}</small>
-            <strong>
-              {index === 0 ? coins :
-               index === 1 ? `${completedOrders}/${orders.length}` :
-               index === 2 ? `${unlockedLevels.length}/${DESSERTS.length}` :
-               `${maxLevel}级 ${DESSERTS[Math.min(maxLevel - 1, DESSERTS.length - 1)]?.emoji}`}
-            </strong>
-          </article>
-        ))}
+        {!eventMode ? (
+          <>
+            {game.stats.map((stat: string, index: number) => (
+              <article key={stat}>
+                <small>{stat}</small>
+                <strong>
+                  {index === 0 ? coins :
+                   index === 1 ? `${completedOrders}/${orders.length}` :
+                   index === 2 ? `${unlockedLevels.length}/${DESSERTS.length}` :
+                   `${maxLevel}级 ${DESSERTS[Math.min(maxLevel - 1, DESSERTS.length - 1)]?.emoji}`}
+                </strong>
+              </article>
+            ))}
+            <article className="event-entry-article" onClick={() => setShowEventEntry(true)}>
+              <small>🎯 限时活动</small>
+              <strong className="event-entry-text">点击进入 →</strong>
+            </article>
+          </>
+        ) : (
+          <>
+            <article className="event-hud-article">
+              <small>💰 活动金币</small>
+              <strong>{eventCoins}</strong>
+            </article>
+            <article className="event-hud-article">
+              <small>👣 剩余步数</small>
+              <strong className={eventStepsLeft <= 5 ? "steps-warning" : ""}>{eventStepsLeft}/{EVENT_MAX_STEPS}</strong>
+            </article>
+            <article className="event-hud-article">
+              <small>⭐ 最高等级</small>
+              <strong>Lv.{eventStats.maxLevel}</strong>
+            </article>
+            <article className="event-hud-article">
+              <small>💎 碎片</small>
+              <strong>{eventShardsEarned}</strong>
+            </article>
+          </>
+        )}
       </section>
 
       <section className={"playground " + game.mode}>
+        {!eventMode ? (
         <div
           className="board merge-board tutorial-board"
           ref={boardRefEl}
@@ -1448,8 +2005,135 @@ function App(): React.ReactElement {
             );
           })}
         </div>
+        ) : (
+        <div
+          className="board event-board merge-board"
+          ref={eventBoardRefEl}
+        >
+          {eventBoard.map((cell: number | null, index: number) => {
+            const dessert = cell ? DESSERTS[cell - 1] : null;
+            return (
+              <div
+                key={index}
+                data-index={index}
+                ref={(el) => { eventCellRefs.current[index] = el; }}
+                className={getEventCellClass(index)}
+                style={dessert ? {
+                  background: `linear-gradient(145deg, ${dessert.color}88, ${dessert.color}44)`,
+                } : {}}
+              >
+                {dessert && (
+                  <>
+                    <span className="dessert-emoji">{dessert.emoji}</span>
+                    <span className="dessert-level">Lv.{cell}</span>
+                  </>
+                )}
+                {!dessert && <span className="empty-hint">+</span>}
+              </div>
+            );
+          })}
+        </div>
+        )}
 
-        <aside className="side-panel">
+        <aside className={`side-panel ${eventMode ? "event-side-panel" : ""}`}>
+          {eventMode && (
+            <>
+              <div className="event-exit-section">
+                <button className="event-exit-btn" onClick={exitEvent}>
+                  ← 返回主线
+                </button>
+              </div>
+              <h2 className="event-panel-title">🎯 限时挑战</h2>
+              <p className="event-panel-desc">
+                在 <strong>{EVENT_MAX_STEPS}</strong> 步内尽可能合成更高级甜品并完成订单！
+              </p>
+
+              <div className="event-progress-bar">
+                <div
+                  className="event-progress-fill"
+                  style={{ width: `${(eventStepsLeft / EVENT_MAX_STEPS) * 100}%` }}
+                />
+                <span className="event-progress-text">{eventStepsLeft} / {EVENT_MAX_STEPS} 步</span>
+              </div>
+
+              <div className="orders-panel">
+                <div className="orders-header">
+                  <h3>📋 活动订单</h3>
+                </div>
+                {eventOrders.map((order: EventOrder) => {
+                  return (
+                    <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
+                      <div className="order-items">
+                        {order.items.map(({ level, count }, idx: number) => {
+                          const dessert = DESSERTS[level - 1];
+                          const available = eventBoard.filter(c => c === level).length;
+                          const hasEnough = available >= count;
+                          return (
+                            <div key={idx} className={`order-item-row ${hasEnough ? "available" : "unavailable"}`}>
+                              <span className="order-dessert">
+                                <span className="order-emoji">{dessert?.emoji}</span>
+                                <span className="order-name">{dessert?.name}</span>
+                              </span>
+                              <span className="order-count">
+                                <span className={hasEnough ? "count-ok" : "count-missing"}>
+                                  {available}/{count}
+                                </span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="order-footer">
+                        <span className="order-reward">+{order.reward.coins}💰 +{order.reward.shards}💎</span>
+                        {!order.completed && (
+                          <button
+                            className={`submit-btn ${eventCanSubmitOrder(order) ? "can-submit" : "cannot-submit"}`}
+                            onClick={() => eventSubmitOrder(order)}
+                            disabled={!eventCanSubmitOrder(order)}
+                          >
+                            {eventCanSubmitOrder(order) ? "✅ 提交" : "❌ 材料不足"}
+                          </button>
+                        )}
+                        {order.completed && (
+                          <span className="completed-badge">🎉 已完成</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="actions">
+                <button
+                  className={`action-spawn ${eventSpawnCooldown > 0 ? "on-cooldown" : ""} ${eventCoins < EVENT_SPAWN_COST ? "cannot-afford" : ""}`}
+                  onClick={eventSpawnDessert}
+                  disabled={eventSpawnCooldown > 0 || eventCoins < EVENT_SPAWN_COST || eventStepsLeft <= 0}
+                >
+                  <span className="action-main-text">生成甜品</span>
+                  <span className="action-sub-text">
+                    {eventSpawnCooldown > 0
+                      ? `⏳ 冷却中 ${eventSpawnCooldown}s`
+                      : `💰 ${EVENT_SPAWN_COST} 金币 · 消耗1步`}
+                  </span>
+                  {eventSpawnCooldown > 0 && (
+                    <div
+                      className="cooldown-progress"
+                      style={{ width: `${(eventSpawnCooldown / EVENT_SPAWN_COOLDOWN) * 100}%` }}
+                    />
+                  )}
+                </button>
+                <button onClick={eventOrganizeBoard} disabled={eventStepsLeft <= 0}>
+                  🧹 自动整理 (消耗1步)
+                </button>
+                <button onClick={endEvent} className="event-end-btn">
+                  🏁 结束挑战
+                </button>
+              </div>
+            </>
+          )}
+
+          {!eventMode && (
+          <>
           <h2>核心玩法</h2>
           <p>🎯 <strong>新手指引：</strong>先拖动两个相同等级的甜品叠在一起合成更高级甜品，可立即获得金币奖励！有了金币后再点击"生成甜品"按钮或空格继续生产。</p>
           <p>✨ <strong>合成规则：</strong>相同等级甜品合并升级，不同等级无法合成。每次生成消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 甜品。</p>
@@ -1597,6 +2281,8 @@ function App(): React.ReactElement {
               );
             })}
           </div>
+          </>
+          )}
         </aside>
       </section>
 
