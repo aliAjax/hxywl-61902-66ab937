@@ -108,6 +108,14 @@ interface FeedbackState {
   timestamp: number;
 }
 
+function createInitialBoard(): (number | null)[] {
+  const initialBoard = Array(BOARD_SIZE).fill(null);
+  for (let i = 0; i < INITIAL_SPAWN_COUNT; i++) {
+    initialBoard[i] = 1;
+  }
+  return initialBoard;
+}
+
 function loadGameState(): GameState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -119,7 +127,7 @@ function loadGameState(): GameState {
       const isNewGame = !hasExistingBoard && (loadedCoins <= 0);
 
       return {
-        board: loadedBoard,
+        board: isNewGame ? createInitialBoard() : loadedBoard,
         coins: isNewGame ? INITIAL_COINS : Math.max(loadedCoins, 0),
         maxLevel: parsed.maxLevel || 1,
         unlockedLevels: parsed.unlockedLevels || [1],
@@ -130,7 +138,7 @@ function loadGameState(): GameState {
     console.error("Failed to load game state:", e);
   }
   return {
-    board: Array(BOARD_SIZE).fill(null),
+    board: createInitialBoard(),
     coins: INITIAL_COINS,
     maxLevel: 1,
     unlockedLevels: [1],
@@ -900,9 +908,7 @@ function App(): React.ReactElement {
   useEffect(() => {
     const hasAnyDessert = board.some((cell: number | null) => cell !== null);
     if (!hasAnyDessert) {
-      for (let i = 0; i < INITIAL_SPAWN_COUNT; i++) {
-        spawnDessert(1, true);
-      }
+      setBoard(createInitialBoard());
     }
   }, []);
 
