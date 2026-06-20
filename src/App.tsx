@@ -622,6 +622,21 @@ function App(): React.ReactElement {
     }
   }, [eventBoard, eventMode, recalcEventMergeHint]);
 
+  useEffect(() => {
+    const handleTestSetBoard = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { board, coins, maxLevel, unlockedLevels, spawnCooldownEnd, orders } = customEvent.detail;
+      if (board) setBoard(board);
+      if (coins !== undefined) setCoins(coins);
+      if (maxLevel) setMaxLevel(maxLevel);
+      if (unlockedLevels) setUnlockedLevels(unlockedLevels);
+      if (spawnCooldownEnd !== undefined) setSpawnCooldownEnd(spawnCooldownEnd);
+      if (orders) setOrders(orders);
+    };
+    window.addEventListener("test-set-board", handleTestSetBoard);
+    return () => window.removeEventListener("test-set-board", handleTestSetBoard);
+  }, [setBoard, setCoins, setMaxLevel, setUnlockedLevels, setSpawnCooldownEnd, setOrders]);
+
   const handleExportSave = useCallback((): void => {
     progressHandleExportSave(showToast);
     setShowSavePanel(false);
