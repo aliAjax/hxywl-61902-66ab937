@@ -1479,6 +1479,36 @@ function App(): React.ReactElement {
     eventOrderRecordsRef.current = [];
     eventMergeIdCounterRef.current = 0;
     eventOrderIdCounterRef.current = 0;
+
+    setAchievementState((prev) => {
+      const today = new Date().toISOString().split("T")[0];
+      const lastDate = prev.lastPlayDate;
+      let newStreak = prev.streak;
+      if (lastDate !== today) {
+        if (lastDate) {
+          const lastDateObj = new Date(lastDate);
+          const todayObj = new Date(today);
+          const diffDays = Math.floor((todayObj.getTime() - lastDateObj.getTime()) / 86400000);
+          if (diffDays === 1) {
+            newStreak = prev.streak + 1;
+          } else {
+            newStreak = 1;
+          }
+        } else {
+          newStreak = 1;
+        }
+      }
+
+      const updated = { ...prev };
+      updated.progress = { ...prev.progress };
+      updated.streak = newStreak;
+      updated.lastPlayDate = today;
+
+      checkAchievementCompletion(updated, "streak", newStreak);
+
+      return updated;
+    });
+
     setShowEventEntry(false);
     setEventMode(true);
     showToast("🎮 限时挑战开始！加油！");
@@ -1570,26 +1600,6 @@ function App(): React.ReactElement {
       updated.bestStepsRemaining = Math.max(prev.bestStepsRemaining, stepsRemaining);
       updated.bestShardEarnings = Math.max(prev.bestShardEarnings, shardsEarned);
 
-      const today = new Date().toISOString().split("T")[0];
-      const lastDate = prev.lastPlayDate;
-      let newStreak = prev.streak;
-      if (lastDate !== today) {
-        if (lastDate) {
-          const lastDateObj = new Date(lastDate);
-          const todayObj = new Date(today);
-          const diffDays = Math.floor((todayObj.getTime() - lastDateObj.getTime()) / 86400000);
-          if (diffDays === 1) {
-            newStreak = prev.streak + 1;
-          } else {
-            newStreak = 1;
-          }
-        } else {
-          newStreak = 1;
-        }
-      }
-      updated.streak = newStreak;
-      updated.lastPlayDate = today;
-
       const allNewlyCompleted: string[] = [];
 
       const maxLevelCompletions = checkAchievementCompletion(updated, "maxLevel", maxLevel);
@@ -1603,9 +1613,6 @@ function App(): React.ReactElement {
 
       const shardsCompletions = checkAchievementCompletion(updated, "shardEarnings", shardsEarned);
       allNewlyCompleted.push(...shardsCompletions);
-
-      const streakCompletions = checkAchievementCompletion(updated, "streak", newStreak);
-      allNewlyCompleted.push(...streakCompletions);
 
       if (allNewlyCompleted.length > 0) {
         setNewlyCompletedAchievements(allNewlyCompleted);

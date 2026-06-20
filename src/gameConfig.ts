@@ -264,9 +264,9 @@ export const ACHIEVEMENT_DEFS: AchievementDef[] = [
   { id: "shards_5", category: "shardEarnings", name: "碎片收集者", description: "单局获得 5 碎片以上", icon: "💎", threshold: 5, shardReward: 3 },
   { id: "shards_10", category: "shardEarnings", name: "碎片猎人", description: "单局获得 10 碎片以上", icon: "🔮", threshold: 10, shardReward: 6 },
   { id: "shards_15", category: "shardEarnings", name: "碎片大师", description: "单局获得 15 碎片以上", icon: "💠", threshold: 15, shardReward: 10 },
-  { id: "streak_3", category: "streak", name: "坚持三日", description: "连续参与 3 次", icon: "🔥", threshold: 3, shardReward: 4 },
-  { id: "streak_5", category: "streak", name: "五连挑战", description: "连续参与 5 次", icon: "⚡", threshold: 5, shardReward: 8 },
-  { id: "streak_10", category: "streak", name: "十连传奇", description: "连续参与 10 次", icon: "🌟", threshold: 10, shardReward: 15 },
+  { id: "streak_3", category: "streak", name: "坚持三日", description: "连续 3 天参与活动", icon: "🔥", threshold: 3, shardReward: 4 },
+  { id: "streak_5", category: "streak", name: "五连挑战", description: "连续 5 天参与活动", icon: "⚡", threshold: 5, shardReward: 8 },
+  { id: "streak_10", category: "streak", name: "十连传奇", description: "连续 10 天参与活动", icon: "🌟", threshold: 10, shardReward: 15 },
 ];
 
 export function createInitialAchievementState(): AchievementState {
