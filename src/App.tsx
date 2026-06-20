@@ -1235,6 +1235,7 @@ function App(): React.ReactElement {
 
   const handleExportSave = useCallback((): void => {
     try {
+      const timelineData = getSaveFileTimelineData();
       const gameData: SaveFileGameData = {
         board: boardRef.current,
         coins: coinsRef.current,
@@ -1248,6 +1249,7 @@ function App(): React.ReactElement {
           items: o.items.map(it => ({ ...it })),
         })),
         spawnCooldownEnd: spawnCooldownEndRef.current || 0,
+        timeline: timelineData || undefined,
       };
       const saveFile = createSaveFile(gameData, true);
       downloadSaveFile(saveFile);
@@ -1386,8 +1388,8 @@ function App(): React.ReactElement {
 
   const handleResetProgress = useCallback((): void => {
     try {
-      recordReset("user_initiated");
       resetTimeline();
+      recordReset("user_initiated");
       refreshTimeline();
 
       localStorage.removeItem(STORAGE_KEY);
