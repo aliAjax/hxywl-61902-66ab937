@@ -2753,14 +2753,6 @@ button {
   margin-bottom: 20px;
 }
 
-.replay-section {
-  display: none;
-}
-
-.replay-section:first-child {
-  display: block;
-}
-
 .replay-section-title {
   margin: 0 0 12px;
   font-size: 16px;
