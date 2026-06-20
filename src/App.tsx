@@ -47,6 +47,11 @@ import {
   EventReplayData,
   EventCoinSource,
   EventShardSource,
+  ACHIEVEMENT_DEFS,
+  AchievementState,
+  AchievementDef,
+  createInitialAchievementState,
+  checkAchievementCompletion,
 } from "./gameConfig";
 import SimulationPanel from "./SimulationPanel";
 
@@ -76,6 +81,7 @@ const game = {
 const EVENT_SHARDS_KEY = game.id + "-shards";
 const EVENT_HIGH_SCORE_KEY = game.id + "-event-highscore";
 const RECENTLY_UNLOCKED_KEY = game.id + "-recently-unlocked";
+const ACHIEVEMENT_KEY = game.id + "-achievements";
 
 interface EventOrder {
   id: number;
@@ -839,6 +845,46 @@ function saveEventHighScore(score: number): void {
   localStorage.setItem(EVENT_HIGH_SCORE_KEY, String(score));
 }
 
+function loadAchievementState(): AchievementState {
+  try {
+    const saved = localStorage.getItem(ACHIEVEMENT_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const initial = createInitialAchievementState();
+      const progress = { ...initial.progress };
+      for (const def of ACHIEVEMENT_DEFS) {
+        if (parsed.progress && parsed.progress[def.id]) {
+          progress[def.id] = {
+            current: parsed.progress[def.id].current ?? 0,
+            completed: parsed.progress[def.id].completed ?? false,
+            claimed: parsed.progress[def.id].claimed ?? false,
+          };
+        }
+      }
+      return {
+        progress,
+        streak: typeof parsed.streak === "number" ? parsed.streak : 0,
+        lastPlayDate: parsed.lastPlayDate ?? null,
+        bestMaxLevel: typeof parsed.bestMaxLevel === "number" ? parsed.bestMaxLevel : 1,
+        bestOrdersCompleted: typeof parsed.bestOrdersCompleted === "number" ? parsed.bestOrdersCompleted : 0,
+        bestStepsRemaining: typeof parsed.bestStepsRemaining === "number" ? parsed.bestStepsRemaining : 0,
+        bestShardEarnings: typeof parsed.bestShardEarnings === "number" ? parsed.bestShardEarnings : 0,
+      };
+    }
+  } catch (e) {
+    console.error("Failed to load achievement state:", e);
+  }
+  return createInitialAchievementState();
+}
+
+function saveAchievementState(state: AchievementState): void {
+  try {
+    localStorage.setItem(ACHIEVEMENT_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error("Failed to save achievement state:", e);
+  }
+}
+
 function generateEventOrders(): EventOrder[] {
   const orders: EventOrder[] = [];
   for (let i = 0; i < EVENT_ORDER_COUNT; i++) {
@@ -939,10 +985,15 @@ function App(): React.ReactElement {
   const [eventReplayData, setEventReplayData] = useState<EventReplayData | null>(null);
   const [showEventReplay, setShowEventReplay] = useState<boolean>(false);
   const [replayActiveTab, setReplayActiveTab] = useState<number>(0);
+  const [achievementState, setAchievementState] = useState<AchievementState>(loadAchievementState());
+  const [newlyCompletedAchievements, setNewlyCompletedAchievements] = useState<string[]>([]);
+  const [showAchievementPanel, setShowAchievementPanel] = useState<boolean>(false);
   const eventMergeRecordsRef = useRef<EventMergeRecord[]>([]);
   const eventOrderRecordsRef = useRef<EventOrderRecord[]>([]);
   const eventMergeIdCounterRef = useRef<number>(0);
   const eventOrderIdCounterRef = useRef<number>(0);
+  const achievementStateRef = useRef<AchievementState>(achievementState);
+  achievementStateRef.current = achievementState;
 
   const [drag, setDrag] = useState<DragState>({
     isDragging: false,
@@ -1314,6 +1365,10 @@ function App(): React.ReactElement {
     saveEventShards(eventShards);
   }, [eventShards]);
 
+  useEffect(() => {
+    saveAchievementState(achievementState);
+  }, [achievementState]);
+
   const getCurrentTutorialStep = useCallback(() => {
     return TUTORIAL_STEPS.find(s => s.step === tutorial.currentStep) || null;
   }, [tutorial.currentStep]);
@@ -1466,6 +1521,24 @@ function App(): React.ReactElement {
     };
   }, []);
 
+  const claimAchievementReward = useCallback((achievementId: string): void => {
+    const def = ACHIEVEMENT_DEFS.find(d => d.id === achievementId);
+    if (!def) return;
+    setAchievementState((prev) => {
+      const entry = prev.progress[achievementId];
+      if (!entry || !entry.completed || entry.claimed) return prev;
+      return {
+        ...prev,
+        progress: {
+          ...prev.progress,
+          [achievementId]: { ...entry, claimed: true },
+        },
+      };
+    });
+    setEventShards((prev) => prev + def.shardReward);
+    showToast(`🏆 成就奖励已领取！+${def.shardReward}💎 碎片`);
+  }, [showToast]);
+
   const endEvent = useCallback((): void => {
     const result = calculateEventResult(eventStatsRef.current, eventCoinsRef.current, eventShardsEarned);
     setEventResult(result);
@@ -1483,6 +1556,63 @@ function App(): React.ReactElement {
       setEventHighScore(score);
       saveEventHighScore(score);
     }
+
+    const stepsRemaining = eventStepsLeftRef.current;
+    const maxLevel = eventStatsRef.current.maxLevel;
+    const ordersCompleted = eventStatsRef.current.ordersCompleted;
+    const shardsEarned = eventShardsEarned + Math.floor(maxLevel / 2) + ordersCompleted;
+
+    setAchievementState((prev) => {
+      const updated = { ...prev };
+      updated.progress = { ...prev.progress };
+      updated.bestMaxLevel = Math.max(prev.bestMaxLevel, maxLevel);
+      updated.bestOrdersCompleted = Math.max(prev.bestOrdersCompleted, ordersCompleted);
+      updated.bestStepsRemaining = Math.max(prev.bestStepsRemaining, stepsRemaining);
+      updated.bestShardEarnings = Math.max(prev.bestShardEarnings, shardsEarned);
+
+      const today = new Date().toISOString().split("T")[0];
+      const lastDate = prev.lastPlayDate;
+      let newStreak = prev.streak;
+      if (lastDate !== today) {
+        if (lastDate) {
+          const lastDateObj = new Date(lastDate);
+          const todayObj = new Date(today);
+          const diffDays = Math.floor((todayObj.getTime() - lastDateObj.getTime()) / 86400000);
+          if (diffDays === 1) {
+            newStreak = prev.streak + 1;
+          } else {
+            newStreak = 1;
+          }
+        } else {
+          newStreak = 1;
+        }
+      }
+      updated.streak = newStreak;
+      updated.lastPlayDate = today;
+
+      const allNewlyCompleted: string[] = [];
+
+      const maxLevelCompletions = checkAchievementCompletion(updated, "maxLevel", maxLevel);
+      allNewlyCompleted.push(...maxLevelCompletions);
+
+      const ordersCompletions = checkAchievementCompletion(updated, "ordersCompleted", ordersCompleted);
+      allNewlyCompleted.push(...ordersCompletions);
+
+      const stepsCompletions = checkAchievementCompletion(updated, "stepsRemaining", stepsRemaining);
+      allNewlyCompleted.push(...stepsCompletions);
+
+      const shardsCompletions = checkAchievementCompletion(updated, "shardEarnings", shardsEarned);
+      allNewlyCompleted.push(...shardsCompletions);
+
+      const streakCompletions = checkAchievementCompletion(updated, "streak", newStreak);
+      allNewlyCompleted.push(...streakCompletions);
+
+      if (allNewlyCompleted.length > 0) {
+        setNewlyCompletedAchievements(allNewlyCompleted);
+      }
+
+      return updated;
+    });
 
     setEventMode(false);
   }, [eventShardsEarned, eventHighScore, buildEventReplayData]);
@@ -3007,6 +3137,48 @@ function App(): React.ReactElement {
               </div>
             </div>
 
+            <div className="event-entry-achievements">
+              <div className="event-achievements-header" onClick={() => setShowAchievementPanel(!showAchievementPanel)}>
+                <span className="event-achievements-title">🏆 活动成就</span>
+                <span className="event-achievements-toggle">{showAchievementPanel ? "收起 ▲" : "展开 ▼"}</span>
+              </div>
+              {showAchievementPanel && (
+                <div className="event-achievements-list">
+                  {ACHIEVEMENT_DEFS.map((def) => {
+                    const entry = achievementState.progress[def.id];
+                    const isCompleted = entry?.completed ?? false;
+                    const isClaimed = entry?.claimed ?? false;
+                    const current = entry?.current ?? 0;
+                    const progressPercent = Math.min(100, Math.round((current / def.threshold) * 100));
+                    return (
+                      <div key={def.id} className={`achievement-card ${isCompleted ? (isClaimed ? "achievement-claimed" : "achievement-claimable") : "achievement-in-progress"}`}>
+                        <div className="achievement-icon">{def.icon}</div>
+                        <div className="achievement-info">
+                          <div className="achievement-name">{def.name}</div>
+                          <div className="achievement-desc">{def.description}</div>
+                          <div className="achievement-progress-bar">
+                            <div className="achievement-progress-fill" style={{ width: `${progressPercent}%` }} />
+                            <span className="achievement-progress-text">{current}/{def.threshold}</span>
+                          </div>
+                        </div>
+                        <div className="achievement-reward">
+                          {isClaimed ? (
+                            <span className="achievement-claimed-badge">✅ 已领取</span>
+                          ) : isCompleted ? (
+                            <button className="achievement-claim-btn" onClick={(e) => { e.stopPropagation(); claimAchievementReward(def.id); }}>
+                              🎁 +{def.shardReward}💎
+                            </button>
+                          ) : (
+                            <span className="achievement-shard-amount">+{def.shardReward}💎</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <div className="event-rules">
               <h4>🎮 挑战规则</h4>
               <ul>
@@ -3014,6 +3186,7 @@ function App(): React.ReactElement {
                 <li>完成活动订单可获得金币和图鉴碎片奖励</li>
                 <li>合成越高级甜品，最终奖励越丰厚</li>
                 <li>活动棋盘与主线独立，退出不影响主线进度</li>
+                <li>完成成就可领取图鉴碎片奖励</li>
               </ul>
             </div>
 
@@ -3122,6 +3295,12 @@ function App(): React.ReactElement {
                 onClick={() => setReplayActiveTab(2)}
               >
                 收益来源
+              </div>
+              <div 
+                className={`replay-tab ${replayActiveTab === 3 ? 'active' : ''}`}
+                onClick={() => setReplayActiveTab(3)}
+              >
+                🏆 成就
               </div>
             </div>
 
@@ -3233,6 +3412,54 @@ function App(): React.ReactElement {
                         <span>{eventResult.shards}</span>
                       </div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {replayActiveTab === 3 && (
+                <div className="replay-section">
+                  <h3 className="replay-section-title">🏆 成就进度</h3>
+                  {newlyCompletedAchievements.length > 0 && (
+                    <div className="achievement-newly-completed-banner">
+                      🎉 本次挑战解锁了 {newlyCompletedAchievements.length} 个新成就！
+                    </div>
+                  )}
+                  <div className="replay-achievements-list">
+                    {ACHIEVEMENT_DEFS.map((def) => {
+                      const entry = achievementState.progress[def.id];
+                      const isCompleted = entry?.completed ?? false;
+                      const isClaimed = entry?.claimed ?? false;
+                      const current = entry?.current ?? 0;
+                      const progressPercent = Math.min(100, Math.round((current / def.threshold) * 100));
+                      const isNewlyCompleted = newlyCompletedAchievements.includes(def.id);
+                      return (
+                        <div key={def.id} className={`achievement-card ${isCompleted ? (isClaimed ? "achievement-claimed" : "achievement-claimable") : "achievement-in-progress"} ${isNewlyCompleted ? "achievement-new" : ""}`}>
+                          <div className="achievement-icon">{def.icon}</div>
+                          <div className="achievement-info">
+                            <div className="achievement-name">
+                              {def.name}
+                              {isNewlyCompleted && <span className="achievement-new-badge">NEW</span>}
+                            </div>
+                            <div className="achievement-desc">{def.description}</div>
+                            <div className="achievement-progress-bar">
+                              <div className="achievement-progress-fill" style={{ width: `${progressPercent}%` }} />
+                              <span className="achievement-progress-text">{current}/{def.threshold}</span>
+                            </div>
+                          </div>
+                          <div className="achievement-reward">
+                            {isClaimed ? (
+                              <span className="achievement-claimed-badge">✅ 已领取</span>
+                            ) : isCompleted ? (
+                              <button className="achievement-claim-btn" onClick={(e) => { e.stopPropagation(); claimAchievementReward(def.id); }}>
+                                🎁 +{def.shardReward}💎
+                              </button>
+                            ) : (
+                              <span className="achievement-shard-amount">+{def.shardReward}💎</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

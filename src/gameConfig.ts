@@ -224,6 +224,85 @@ export function generateEventSimOrders(): EventSimOrder[] {
   return orders;
 }
 
+export type AchievementCategory = "maxLevel" | "ordersCompleted" | "stepsRemaining" | "shardEarnings" | "streak";
+
+export interface AchievementDef {
+  id: string;
+  category: AchievementCategory;
+  name: string;
+  description: string;
+  icon: string;
+  threshold: number;
+  shardReward: number;
+}
+
+export interface AchievementProgressEntry {
+  current: number;
+  completed: boolean;
+  claimed: boolean;
+}
+
+export interface AchievementState {
+  progress: { [achievementId: string]: AchievementProgressEntry };
+  streak: number;
+  lastPlayDate: string | null;
+  bestMaxLevel: number;
+  bestOrdersCompleted: number;
+  bestStepsRemaining: number;
+  bestShardEarnings: number;
+}
+
+export const ACHIEVEMENT_DEFS: AchievementDef[] = [
+  { id: "maxLevel_3", category: "maxLevel", name: "合成新手", description: "在活动中达到 Lv.3", icon: "🧁", threshold: 3, shardReward: 2 },
+  { id: "maxLevel_5", category: "maxLevel", name: "合成达人", description: "在活动中达到 Lv.5", icon: "🍰", threshold: 5, shardReward: 5 },
+  { id: "maxLevel_7", category: "maxLevel", name: "合成大师", description: "在活动中达到 Lv.7", icon: "🎂", threshold: 7, shardReward: 10 },
+  { id: "orders_1", category: "ordersCompleted", name: "订单新手", description: "单局完成 1 个订单", icon: "📋", threshold: 1, shardReward: 2 },
+  { id: "orders_2", category: "ordersCompleted", name: "订单能手", description: "单局完成 2 个订单", icon: "📦", threshold: 2, shardReward: 5 },
+  { id: "orders_3", category: "ordersCompleted", name: "订单达人", description: "单局完成 3 个订单", icon: "🏆", threshold: 3, shardReward: 8 },
+  { id: "steps_5", category: "stepsRemaining", name: "步步精算", description: "结束时剩余 5 步以上", icon: "👟", threshold: 5, shardReward: 3 },
+  { id: "steps_10", category: "stepsRemaining", name: "步步为营", description: "结束时剩余 10 步以上", icon: "🦶", threshold: 10, shardReward: 6 },
+  { id: "shards_5", category: "shardEarnings", name: "碎片收集者", description: "单局获得 5 碎片以上", icon: "💎", threshold: 5, shardReward: 3 },
+  { id: "shards_10", category: "shardEarnings", name: "碎片猎人", description: "单局获得 10 碎片以上", icon: "🔮", threshold: 10, shardReward: 6 },
+  { id: "shards_15", category: "shardEarnings", name: "碎片大师", description: "单局获得 15 碎片以上", icon: "💠", threshold: 15, shardReward: 10 },
+  { id: "streak_3", category: "streak", name: "坚持三日", description: "连续参与 3 次", icon: "🔥", threshold: 3, shardReward: 4 },
+  { id: "streak_5", category: "streak", name: "五连挑战", description: "连续参与 5 次", icon: "⚡", threshold: 5, shardReward: 8 },
+  { id: "streak_10", category: "streak", name: "十连传奇", description: "连续参与 10 次", icon: "🌟", threshold: 10, shardReward: 15 },
+];
+
+export function createInitialAchievementState(): AchievementState {
+  const progress: { [achievementId: string]: AchievementProgressEntry } = {};
+  for (const def of ACHIEVEMENT_DEFS) {
+    progress[def.id] = { current: 0, completed: false, claimed: false };
+  }
+  return {
+    progress,
+    streak: 0,
+    lastPlayDate: null,
+    bestMaxLevel: 1,
+    bestOrdersCompleted: 0,
+    bestStepsRemaining: 0,
+    bestShardEarnings: 0,
+  };
+}
+
+export function checkAchievementCompletion(state: AchievementState, category: AchievementCategory, value: number): string[] {
+  const newlyCompleted: string[] = [];
+  for (const def of ACHIEVEMENT_DEFS) {
+    if (def.category !== category) continue;
+    const entry = state.progress[def.id];
+    if (!entry || entry.completed) continue;
+    const updated = Math.max(entry.current, value);
+    if (updated >= def.threshold) {
+      entry.current = updated;
+      entry.completed = true;
+      newlyCompleted.push(def.id);
+    } else {
+      entry.current = updated;
+    }
+  }
+  return newlyCompleted;
+}
+
 export function calculateEventResult(
   merges: number,
   ordersCompleted: number,
