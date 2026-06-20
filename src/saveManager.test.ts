@@ -232,14 +232,36 @@ describe("损坏 JSON 兜底", () => {
       expect(result.save).toBeNull();
     });
 
-    it("普通字符串而非 JSON 对象应返回失败", () => {
+    it("JSON 值为字符串而非对象时，语法解析成功但 save 不是对象", () => {
       const result = parseSaveFromString('"just a string"');
       expect(result.success).toBe(true);
-      expect(result.save).toBe("just a string" as unknown as typeof result.save);
+      expect(typeof result.save).toBe("string");
+    });
+
+    it("JSON 值为数组而非对象时，语法解析成功但 save 不是对象", () => {
+      const result = parseSaveFromString("[1, 2, 3]");
+      expect(result.success).toBe(true);
+      expect(Array.isArray(result.save)).toBe(true);
+    });
+
+    it("JSON 值为数字而非对象时，语法解析成功但 save 不是对象", () => {
+      const result = parseSaveFromString("12345");
+      expect(result.success).toBe(true);
+      expect(typeof result.save).toBe("number");
     });
   });
 
   describe("validateSaveFile", () => {
+    it("解析结果为字符串（非对象）时应验证失败", () => {
+      const result = validateSaveFile("not an object");
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.includes("JSON 对象"))).toBe(true);
+    });
+
+    it("解析结果为数组（非对象）时应验证失败", () => {
+      const result = validateSaveFile([1, 2, 3]);
+      expect(result.isValid).toBe(false);
+    });
     it("空存档应验证失败", () => {
       const result = validateSaveFile(null);
       expect(result.isValid).toBe(false);

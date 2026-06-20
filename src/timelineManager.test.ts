@@ -372,8 +372,8 @@ describe("时间线管理", () => {
     });
 
     it("localStorage 中是损坏 JSON 时应创建新时间线", () => {
-      localStorage.setItem(TIMELINE_STORAGE_KEY, "{invalid json}");
       clearTimeline();
+      localStorage.setItem(TIMELINE_STORAGE_KEY, "{invalid json}");
 
       const timeline = loadTimeline();
       expect(timeline).toBeDefined();
@@ -385,8 +385,8 @@ describe("时间线管理", () => {
         wrongField: "value",
         records: "not array",
       };
-      localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(badData));
       clearTimeline();
+      localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(badData));
 
       const timeline = loadTimeline();
       expect(timeline).toBeDefined();
