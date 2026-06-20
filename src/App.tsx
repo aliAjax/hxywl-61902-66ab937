@@ -93,6 +93,26 @@ import {
   SynthesisPlan,
   calculateSynthesisPlan,
 } from "./gameConfig";
+import {
+  GameState,
+  Order,
+  OrderItem,
+  RecentlyUnlocked,
+  UnlockHint,
+  findNextMergeHint,
+  createInitialBoard,
+  generateOrder,
+  generateOrders,
+  countDessertsOnBoard,
+  removeDessertsFromBoard,
+  getOrderLevelTotals,
+  canSubmitOrder,
+  getOrderProgress,
+  formatUnlockTime,
+  getNextUnlockHint,
+  submitOrder,
+} from "./gameBoardUtils";
+import { useGameProgress, OfflineReward, loadMultiLevelSaves, loadRecentlyUnlocked, saveRecentlyUnlocked } from "./hooks/useGameProgress";
 import SimulationPanel from "./SimulationPanel";
 
 const game = {
@@ -209,45 +229,6 @@ const TUTORIAL_STEPS: { step: TutorialStep; title: string; description: string; 
 const POINTER_MOVE_THRESHOLD = 5;
 let orderIdCounter = 0;
 
-interface GameState {
-  board: (number | null)[];
-  coins: number;
-  maxLevel: number;
-  unlockedLevels: number[];
-  unlockTimes: { [key: number]: string };
-}
-
-interface OfflineData {
-  lastLeaveTime: number;
-  lastClaimTime: number;
-  maxLevelAtLeave: number;
-  baseEarningsRate: number;
-}
-
-interface OfflineReward {
-  coins: number;
-  offlineMinutes: number;
-  maxLevel: number;
-  isValid: boolean;
-  reason?: "first" | "rollback" | "too_short" | "already_claimed";
-  earningsPerMinute: number;
-  capMinutes: number;
-  actualOfflineMinutes: number;
-}
-
-interface OrderItem {
-  level: number;
-  count: number;
-  collected: number;
-}
-
-interface Order {
-  id: number;
-  items: OrderItem[];
-  reward: number;
-  completed: boolean;
-}
-
 interface DragState {
   isDragging: boolean;
   sourceIndex: number | null;
@@ -263,422 +244,6 @@ interface FeedbackState {
   type: "success" | "fail" | null;
   indices: number[];
   timestamp: number;
-}
-
-function loadCurrentLevelId(): string {
-  try {
-    const saved = localStorage.getItem(CURRENT_LEVEL_KEY);
-    if (saved && LEVEL_CONFIGS[saved]) return saved;
-  } catch (e) {}
-  return "classic";
-}
-
-function saveCurrentLevelId(levelId: string): void {
-  try {
-    localStorage.setItem(CURRENT_LEVEL_KEY, levelId);
-  } catch (e) {}
-}
-
-function loadMultiLevelSaves(): MultiLevelSaveData {
-  try {
-    const saved = localStorage.getItem(LEVEL_SAVE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && parsed.levels && typeof parsed.currentLevel === "string") {
-        for (const levelId of LEVEL_ORDER) {
-          if (!parsed.levels[levelId]) {
-            parsed.levels[levelId] = createEmptyLevelSave(levelId);
-          }
-        }
-        return parsed as MultiLevelSaveData;
-      }
-    }
-  } catch (e) {
-    console.error("Failed to load multi-level saves:", e);
-  }
-  try {
-    const legacySaved = localStorage.getItem(STORAGE_KEY);
-    if (legacySaved) {
-      const parsed = JSON.parse(legacySaved);
-      let gameData: SaveFileGameData;
-      if (parsed.data && typeof parsed.data === "object") {
-        gameData = parsed.data as SaveFileGameData;
-      } else {
-        gameData = {
-          board: parsed.board || Array(LEVEL_CONFIGS.classic.boardSize).fill(null),
-          coins: typeof parsed.coins === "number" ? parsed.coins : LEVEL_CONFIGS.classic.initialCoins,
-          maxLevel: parsed.maxLevel || 1,
-          unlockedLevels: parsed.unlockedLevels || [1],
-          unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
-          orders: parsed.orders || [],
-          spawnCooldownEnd: parsed.spawnCooldownEnd || 0,
-        };
-      }
-      const multiData = migrateLegacySaveToMultiLevel(gameData);
-      saveMultiLevelSaves(multiData);
-      return multiData;
-    }
-  } catch (e) {
-    console.error("Failed to migrate legacy save:", e);
-  }
-  return createInitialMultiLevelData();
-}
-
-function saveMultiLevelSaves(data: MultiLevelSaveData): void {
-  try {
-    localStorage.setItem(LEVEL_SAVE_KEY, JSON.stringify(data));
-  } catch (e) {
-    console.error("Failed to save multi-level data:", e);
-  }
-}
-
-function findNextMergeHint(currentBoard: (number | null)[], config?: LevelConfig): { sourceIndex: number; targetIndex: number; level: number } | null {
-  const desserts = config?.desserts || DESSERTS;
-  const levelIndices = new Map<number, number[]>();
-  for (let i = 0; i < currentBoard.length; i++) {
-    const cell = currentBoard[i];
-    if (cell !== null && cell < desserts.length) {
-      if (!levelIndices.has(cell)) {
-        levelIndices.set(cell, []);
-      }
-      levelIndices.get(cell)!.push(i);
-    }
-  }
-
-  const mergeableLevels = Array.from(levelIndices.entries())
-    .filter(([, indices]) => indices.length >= 2)
-    .map(([level]) => level)
-    .sort((a, b) => b - a);
-
-  if (mergeableLevels.length === 0) return null;
-
-  const bestLevel = mergeableLevels[0];
-  const indices = levelIndices.get(bestLevel)!;
-  return {
-    sourceIndex: indices[0],
-    targetIndex: indices[1],
-    level: bestLevel,
-  };
-}
-
-function createInitialBoard(config?: LevelConfig): (number | null)[] {
-  const c = config || LEVEL_CONFIGS.classic;
-  const initialBoard = Array(c.boardSize).fill(null);
-  for (let i = 0; i < c.initialSpawnCount; i++) {
-    initialBoard[i] = 1;
-  }
-  return initialBoard;
-}
-
-function createFallbackGameData(config?: LevelConfig): SaveFileGameData {
-  const c = config || LEVEL_CONFIGS.classic;
-  return {
-    board: createInitialBoard(c),
-    coins: c.initialCoins,
-    maxLevel: 1,
-    unlockedLevels: [1],
-    unlockTimes: { 1: new Date().toISOString() },
-    orders: [],
-    spawnCooldownEnd: 0,
-  };
-}
-
-function loadGameState(levelId: string): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number; timelineData: SaveFileTimelineData | null } {
-  const config = getLevelConfig(levelId);
-  const fallback = createFallbackGameData(config);
-  const multiData = loadMultiLevelSaves();
-  const levelSave = multiData.levels[levelId];
-  if (levelSave) {
-    const boardSize = config.boardSize;
-    let loadedBoard = levelSave.board;
-    if (loadedBoard.length !== boardSize) {
-      const newBoard: (number | null)[] = Array(boardSize).fill(null);
-      for (let i = 0; i < Math.min(loadedBoard.length, boardSize); i++) {
-        newBoard[i] = loadedBoard[i];
-      }
-      loadedBoard = newBoard;
-    }
-    const hasExistingBoard = loadedBoard.some((cell) => cell !== null);
-    const loadedCoins = levelSave.coins;
-    const isNewGame = !hasExistingBoard && loadedCoins <= 0;
-    const finalOrders = levelSave.orders && levelSave.orders.length > 0
-      ? (levelSave.orders as Order[])
-      : generateOrders(levelSave.unlockedLevels, config);
-    return {
-      state: {
-        board: isNewGame ? createInitialBoard(config) : loadedBoard,
-        coins: isNewGame ? config.initialCoins : Math.max(loadedCoins, 0),
-        maxLevel: levelSave.maxLevel,
-        unlockedLevels: levelSave.unlockedLevels,
-        unlockTimes: levelSave.unlockTimes,
-      },
-      orders: finalOrders,
-      loadedFromSave: true,
-      spawnCooldownEnd: levelSave.spawnCooldownEnd ?? 0,
-      timelineData: multiData.globalTimeline || null,
-    };
-  }
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      
-      let gameData: SaveFileGameData;
-      if (parsed.data && typeof parsed.data === "object") {
-        gameData = parsed.data as SaveFileGameData;
-      } else {
-        gameData = {
-          board: parsed.board || Array(config.boardSize).fill(null),
-          coins: typeof parsed.coins === "number" ? parsed.coins : -1,
-          maxLevel: parsed.maxLevel || 1,
-          unlockedLevels: parsed.unlockedLevels || [1],
-          unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
-          orders: parsed.orders || [],
-          spawnCooldownEnd: parsed.spawnCooldownEnd || 0,
-        };
-      }
-
-      const validateResult = validateSaveFile({
-        version: parsed.version || "0.9.0",
-        gameId: parsed.gameId || "hxywl-61902",
-        timestamp: parsed.timestamp || Date.now(),
-        data: gameData,
-      });
-
-      if (validateResult.isValid) {
-        const sanitized = sanitizeSaveData(gameData, fallback);
-        const loadedBoard = sanitized.board;
-        const hasExistingBoard = loadedBoard.some((cell) => cell !== null);
-        const loadedCoins = sanitized.coins;
-        const isNewGame = !hasExistingBoard && loadedCoins <= 0;
-
-        const finalOrders = sanitized.orders && sanitized.orders.length > 0
-          ? (sanitized.orders as Order[])
-          : generateOrders(sanitized.unlockedLevels, config);
-
-        return {
-          state: {
-            board: isNewGame ? createInitialBoard(config) : loadedBoard,
-            coins: isNewGame ? config.initialCoins : Math.max(loadedCoins, 0),
-            maxLevel: sanitized.maxLevel,
-            unlockedLevels: sanitized.unlockedLevels,
-            unlockTimes: sanitized.unlockTimes,
-          },
-          orders: finalOrders,
-          loadedFromSave: true,
-          spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
-          timelineData: sanitized.timeline || null,
-        };
-      } else {
-        console.warn("存档校验存在问题:", validateResult.errors, validateResult.warnings);
-        try {
-          const sanitized = sanitizeSaveData(gameData, fallback);
-          return {
-            state: {
-              board: sanitized.board,
-              coins: Math.max(sanitized.coins, 0),
-              maxLevel: sanitized.maxLevel,
-              unlockedLevels: sanitized.unlockedLevels,
-              unlockTimes: sanitized.unlockTimes,
-            },
-            orders: (sanitized.orders as Order[]) && sanitized.orders.length > 0
-              ? (sanitized.orders as Order[])
-              : generateOrders(sanitized.unlockedLevels, config),
-            loadedFromSave: true,
-            spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
-            timelineData: sanitized.timeline || null,
-          };
-        } catch (innerE) {
-          console.error("修复损坏存档失败，使用新存档:", innerE);
-        }
-      }
-    }
-  } catch (e) {
-    console.error("加载存档失败，使用默认初始值:", e);
-  }
-  return {
-    state: {
-      board: createInitialBoard(config),
-      coins: config.initialCoins,
-      maxLevel: 1,
-      unlockedLevels: [1],
-      unlockTimes: { 1: new Date().toISOString() },
-    },
-    orders: generateOrders([1], config),
-    loadedFromSave: false,
-    spawnCooldownEnd: 0,
-    timelineData: null,
-  };
-}
-
-function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: number, levelId: string = "classic"): void {
-  try {
-    const timelineData = getSaveFileTimelineData();
-    const gameData: SaveFileGameData = {
-      board: state.board,
-      coins: state.coins,
-      maxLevel: state.maxLevel,
-      unlockedLevels: state.unlockedLevels,
-      unlockTimes: state.unlockTimes,
-      orders: orders.map(o => ({
-        id: o.id,
-        reward: o.reward,
-        completed: o.completed,
-        items: o.items.map(it => ({ ...it })),
-      })),
-      spawnCooldownEnd: spawnCooldownEnd || 0,
-      timeline: timelineData || undefined,
-    };
-    const saveFile = createSaveFile(gameData, false);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(saveFile));
-
-    const multiData = loadMultiLevelSaves();
-    const config = getLevelConfig(levelId);
-    multiData.currentLevel = levelId;
-    multiData.levels[levelId] = {
-      coins: state.coins,
-      board: state.board,
-      maxLevel: state.maxLevel,
-      unlockedLevels: state.unlockedLevels,
-      unlockTimes: state.unlockTimes,
-      orders: orders.map(o => ({
-        id: o.id,
-        reward: o.reward,
-        completed: o.completed,
-        items: o.items.map(it => ({ ...it })),
-      })),
-      spawnCooldownEnd: spawnCooldownEnd || 0,
-      offlineLastLeaveTime: multiData.levels[levelId]?.offlineLastLeaveTime || 0,
-      offlineLastClaimTime: multiData.levels[levelId]?.offlineLastClaimTime || 0,
-    };
-    multiData.globalTimeline = timelineData || null;
-    saveMultiLevelSaves(multiData);
-  } catch (e) {
-    console.error("保存存档失败:", e);
-  }
-}
-
-function loadOfflineData(): OfflineData | null {
-  try {
-    const saved = localStorage.getItem(OFFLINE_DATA_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return {
-        lastLeaveTime: parsed.lastLeaveTime || 0,
-        lastClaimTime: parsed.lastClaimTime || 0,
-        maxLevelAtLeave: parsed.maxLevelAtLeave || 1,
-        baseEarningsRate: parsed.baseEarningsRate || BASE_EARNINGS_PER_MINUTE,
-      };
-    }
-  } catch (e) {
-    console.error("Failed to load offline data:", e);
-  }
-  return null;
-}
-
-function saveOfflineData(data: OfflineData): void {
-  localStorage.setItem(OFFLINE_DATA_KEY, JSON.stringify(data));
-}
-
-function hasUnclaimedReward(): boolean {
-  const offlineData = loadOfflineData();
-  if (!offlineData || offlineData.lastLeaveTime === 0) return false;
-  return offlineData.lastClaimTime < offlineData.lastLeaveTime;
-}
-
-function calculateOfflineReward(config: LevelConfig): OfflineReward {
-  const offlineData = loadOfflineData();
-  const now = Date.now();
-  const maxOfflineMinutes = MAX_OFFLINE_HOURS * 60;
-  const fallbackMaxLevel = offlineData?.maxLevelAtLeave || 1;
-  const fallbackRate = calculateBaseEarningsRate(fallbackMaxLevel, config);
-
-  if (!offlineData || offlineData.lastLeaveTime === 0) {
-    return {
-      coins: 0,
-      offlineMinutes: 0,
-      maxLevel: fallbackMaxLevel,
-      isValid: false,
-      reason: "first",
-      earningsPerMinute: fallbackRate,
-      capMinutes: maxOfflineMinutes,
-      actualOfflineMinutes: 0,
-    };
-  }
-
-  if (now < offlineData.lastLeaveTime) {
-    return {
-      coins: 0,
-      offlineMinutes: 0,
-      maxLevel: offlineData.maxLevelAtLeave,
-      isValid: false,
-      reason: "rollback",
-      earningsPerMinute: offlineData.baseEarningsRate,
-      capMinutes: maxOfflineMinutes,
-      actualOfflineMinutes: 0,
-    };
-  }
-
-  if (offlineData.lastClaimTime >= offlineData.lastLeaveTime) {
-    return {
-      coins: 0,
-      offlineMinutes: 0,
-      maxLevel: offlineData.maxLevelAtLeave,
-      isValid: false,
-      reason: "already_claimed",
-      earningsPerMinute: offlineData.baseEarningsRate,
-      capMinutes: maxOfflineMinutes,
-      actualOfflineMinutes: 0,
-    };
-  }
-
-  const offlineMs = now - offlineData.lastLeaveTime;
-  const actualMinutes = Math.floor(offlineMs / 60000);
-
-  if (actualMinutes < 1) {
-    return {
-      coins: 0,
-      offlineMinutes: 0,
-      maxLevel: offlineData.maxLevelAtLeave,
-      isValid: false,
-      reason: "too_short",
-      earningsPerMinute: offlineData.baseEarningsRate,
-      capMinutes: maxOfflineMinutes,
-      actualOfflineMinutes: actualMinutes,
-    };
-  }
-
-  const cappedMinutes = Math.min(actualMinutes, maxOfflineMinutes);
-  const coins = Math.floor(cappedMinutes * offlineData.baseEarningsRate);
-
-  return {
-    coins,
-    offlineMinutes: cappedMinutes,
-    maxLevel: offlineData.maxLevelAtLeave,
-    isValid: true,
-    earningsPerMinute: offlineData.baseEarningsRate,
-    capMinutes: maxOfflineMinutes,
-    actualOfflineMinutes: actualMinutes,
-  };
-}
-
-function recordLeaveTime(maxLevel: number, config: LevelConfig): void {
-  const existing = loadOfflineData();
-  const offlineData: OfflineData = {
-    lastLeaveTime: Date.now(),
-    lastClaimTime: existing?.lastClaimTime || 0,
-    maxLevelAtLeave: maxLevel,
-    baseEarningsRate: calculateBaseEarningsRate(maxLevel, config),
-  };
-  saveOfflineData(offlineData);
-}
-
-function markAsClaimed(): void {
-  const offlineData = loadOfflineData();
-  if (offlineData) {
-    offlineData.lastClaimTime = Date.now();
-    saveOfflineData(offlineData);
-  }
 }
 
 function loadTutorialState(): TutorialState {
@@ -725,264 +290,6 @@ function isTutorialCompleted(): boolean {
     console.error("Failed to check tutorial completion:", e);
   }
   return false;
-}
-
-function generateOrder(unlockedLevels: number[], config?: LevelConfig): Order {
-  const c = config || LEVEL_CONFIGS.classic;
-  const actualMaxItems = Math.min(c.maxOrderItems, unlockedLevels.length);
-  const actualMinItems = Math.min(c.minOrderItems, actualMaxItems);
-  const numItems = Math.floor(Math.random() * (actualMaxItems - actualMinItems + 1)) + actualMinItems;
-  const items: OrderItem[] = [];
-  let totalReward = 0;
-  const levelCounts = new Map<number, number>();
-
-  for (let i = 0; i < numItems; i++) {
-    const level = unlockedLevels[Math.floor(Math.random() * unlockedLevels.length)];
-    const count = Math.floor(Math.random() * 2) + 1;
-    levelCounts.set(level, (levelCounts.get(level) || 0) + count);
-  }
-
-  for (const [level, count] of levelCounts) {
-    items.push({ level, count, collected: 0 });
-    totalReward += calculateOrderItemReward(level, count, c);
-  }
-
-  return {
-    id: ++orderIdCounter,
-    items,
-    reward: totalReward,
-    completed: false,
-  };
-}
-
-function generateOrders(unlockedLevels: number[], config?: LevelConfig): Order[] {
-  const c = config || LEVEL_CONFIGS.classic;
-  if (unlockedLevels.length === 0) return [];
-  const orders: Order[] = [];
-  for (let i = 0; i < c.maxOrders; i++) {
-    orders.push(generateOrder(unlockedLevels, c));
-  }
-  return orders;
-}
-
-function countDessertsOnBoard(board: (number | null)[], level: number): number {
-  return board.filter(cell => cell === level).length;
-}
-
-function removeDessertsFromBoard(board: (number | null)[], level: number, count: number): (number | null)[] {
-  const newBoard = [...board];
-  let removed = 0;
-  for (let i = 0; i < newBoard.length && removed < count; i++) {
-    if (newBoard[i] === level) {
-      newBoard[i] = null;
-      removed++;
-    }
-  }
-  return newBoard;
-}
-
-function getOrderLevelTotals(order: Order): Map<number, number> {
-  const totals = new Map<number, number>();
-  for (const item of order.items) {
-    totals.set(item.level, (totals.get(item.level) || 0) + item.count);
-  }
-  return totals;
-}
-
-function canSubmitOrder(board: (number | null)[], order: Order): boolean {
-  const levelTotals = getOrderLevelTotals(order);
-  for (const [level, count] of levelTotals) {
-    if (countDessertsOnBoard(board, level) < count) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function getOrderProgress(board: (number | null)[], order: Order): { percent: number; totalItems: number; completedItems: number } {
-  const levelTotals = getOrderLevelTotals(order);
-  let totalItems = 0;
-  let completedItems = 0;
-  for (const [level, count] of levelTotals) {
-    totalItems += count;
-    completedItems += Math.min(countDessertsOnBoard(board, level), count);
-  }
-  const percent = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
-  return { percent, totalItems, completedItems };
-}
-
-function formatUnlockTime(isoString: string): string {
-  const date = new Date(isoString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return "刚刚解锁";
-  if (diffMins < 60) return `${diffMins}分钟前解锁`;
-  if (diffHours < 24) return `${diffHours}小时前解锁`;
-  if (diffDays < 7) return `${diffDays}天前解锁`;
-
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const hour = date.getHours().toString().padStart(2, '0');
-  const minute = date.getMinutes().toString().padStart(2, '0');
-  return `${month}月${day}日 ${hour}:${minute}解锁`;
-}
-
-interface RecentlyUnlocked {
-  level: number;
-  timestamp: string;
-  seen: boolean;
-}
-
-function loadRecentlyUnlocked(): RecentlyUnlocked | null {
-  try {
-    const saved = localStorage.getItem(RECENTLY_UNLOCKED_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && typeof parsed.level === "number" && typeof parsed.timestamp === "string") {
-        return parsed as RecentlyUnlocked;
-      }
-    }
-  } catch (e) {
-    console.error("Failed to load recently unlocked:", e);
-  }
-  return null;
-}
-
-function saveRecentlyUnlocked(data: RecentlyUnlocked | null): void {
-  try {
-    if (data) {
-      localStorage.setItem(RECENTLY_UNLOCKED_KEY, JSON.stringify(data));
-    } else {
-      localStorage.removeItem(RECENTLY_UNLOCKED_KEY);
-    }
-  } catch (e) {
-    console.error("Failed to save recently unlocked:", e);
-  }
-}
-
-interface UnlockHintBoardRow {
-  level: number;
-  emoji: string;
-  name: string;
-  onBoard: number;
-  needed: number;
-  shortfall: number;
-  carriedUp: number;
-  effectiveCount: number;
-}
-
-interface UnlockHint {
-  nextLevel: number;
-  nextDessert: Dessert;
-  parentDessert: Dessert;
-  spawnsNeeded: number;
-  mergesNeeded: number;
-  minCost: number;
-  boardProgress: UnlockHintBoardRow[];
-  totalShortfallSpawns: number;
-  totalShortfallCost: number;
-  canMergeOnBoard: boolean;
-  parentEffectiveCount: number;
-}
-
-function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (number | null)[], config?: LevelConfig): UnlockHint | null {
-  const c = config || LEVEL_CONFIGS.classic;
-  const desserts = c.desserts;
-  const maxUnlocked = Math.max(...currentUnlockedLevels);
-  const nextLevel = maxUnlocked + 1;
-  if (nextLevel > desserts.length) return null;
-  const parentDessert = desserts[maxUnlocked - 1];
-  const nextDessert = desserts[nextLevel - 1];
-  const cost = getMergeCostToLevel(nextLevel, maxUnlocked, c);
-  const parentLevel = maxUnlocked;
-
-  const levelCounts = new Map<number, number>();
-  for (const cell of currentBoard) {
-    if (cell !== null && cell >= 1 && cell < nextLevel) {
-      levelCounts.set(cell, (levelCounts.get(cell) || 0) + 1);
-    }
-  }
-
-  const effectiveCounts = new Map<number, number>();
-  const carriedUp = new Map<number, number>();
-  let carryFromBelow = 0;
-  for (let lv = 1; lv <= parentLevel; lv++) {
-    const raw = levelCounts.get(lv) || 0;
-    const totalAtLevel = raw + carryFromBelow;
-    if (lv === parentLevel) {
-      effectiveCounts.set(lv, totalAtLevel);
-      carriedUp.set(lv, 0);
-    } else {
-      const carried = Math.floor(totalAtLevel / 2);
-      const leftover = totalAtLevel - carried * 2;
-      effectiveCounts.set(lv, leftover);
-      carriedUp.set(lv, carried);
-      carryFromBelow = carried;
-    }
-  }
-
-  const parentOnBoard = levelCounts.get(parentLevel) || 0;
-  const parentEffective = effectiveCounts.get(parentLevel) || 0;
-  const parentNeeded = 2;
-  const parentShortfall = Math.max(0, parentNeeded - parentEffective);
-
-  const parentLv1Value = Math.pow(2, parentLevel - 1);
-  let totalLv1Value = 0;
-  for (const [lv, count] of levelCounts.entries()) {
-    totalLv1Value += count * Math.pow(2, lv - 1);
-  }
-  const targetLv1Value = 2 * parentLv1Value;
-  const shortfallLv1Value = Math.max(0, targetLv1Value - totalLv1Value);
-
-  const boardProgress: UnlockHintBoardRow[] = [];
-  for (let lv = parentLevel; lv >= 1; lv--) {
-    const d = desserts[lv - 1];
-    const onBoard = levelCounts.get(lv) || 0;
-    const needed = lv === parentLevel ? 2 : 0;
-    const effective = effectiveCounts.get(lv) || 0;
-    const carried = carriedUp.get(lv) || 0;
-    boardProgress.push({
-      level: lv,
-      emoji: d.emoji,
-      name: d.name,
-      onBoard,
-      needed,
-      shortfall: lv === parentLevel ? parentShortfall : 0,
-      carriedUp: carried,
-      effectiveCount: effective,
-    });
-  }
-
-  return {
-    nextLevel,
-    nextDessert,
-    parentDessert,
-    spawnsNeeded: cost.spawnsNeeded,
-    mergesNeeded: cost.mergesNeeded,
-    minCost: cost.minSpawnCost,
-    boardProgress,
-    totalShortfallSpawns: shortfallLv1Value,
-    totalShortfallCost: shortfallLv1Value * c.spawnCost,
-    canMergeOnBoard: parentEffective >= 2,
-    parentEffectiveCount: parentEffective,
-  };
-}
-
-function submitOrder(board: (number | null)[], order: Order): { newBoard: (number | null)[]; success: boolean } {
-  if (!canSubmitOrder(board, order)) {
-    return { newBoard: board, success: false };
-  }
-
-  const levelTotals = getOrderLevelTotals(order);
-  let newBoard = [...board];
-  for (const [level, count] of levelTotals) {
-    newBoard = removeDessertsFromBoard(newBoard, level, count);
-  }
-  return { newBoard, success: true };
 }
 
 function loadEventShards(): number {
@@ -1117,37 +424,69 @@ function calculateEventResult(
 type SpawnStatus = "ready" | "cooldown" | "no_coins" | "board_full";
 
 function App(): React.ReactElement {
-  const initialLevelId = loadCurrentLevelId();
-
-  const [currentLevelId, setCurrentLevelId] = useState<string>(initialLevelId);
-  const currentConfig = getLevelConfig(currentLevelId);
+  const progress = useGameProgress();
+  const {
+    currentLevelId,
+    currentConfig,
+    setCurrentLevelId,
+    board,
+    setBoard,
+    coins,
+    setCoins,
+    maxLevel,
+    setMaxLevel,
+    unlockedLevels,
+    setUnlockedLevels,
+    unlockTimes,
+    setUnlockTimes,
+    orders,
+    setOrders,
+    spawnCooldownEnd,
+    setSpawnCooldownEnd,
+    spawnCooldown,
+    setSpawnCooldown,
+    boardRef,
+    coinsRef,
+    maxLevelRef,
+    unlockedLevelsRef,
+    unlockTimesRef,
+    ordersRef,
+    spawnCooldownEndRef,
+    spawnCooldownRef,
+    mergeHint,
+    setMergeHint,
+    mergeHintRef,
+    showMergeHint,
+    setShowMergeHint,
+    showMergeHintRef,
+    synthesisPlan,
+    setSynthesisPlan,
+    synthesisPlanRef,
+    showSynthesisPlan,
+    setShowSynthesisPlan,
+    recentlyUnlocked,
+    setRecentlyUnlocked,
+    lastSaveTime,
+    setLastSaveTime,
+    autoSaveActive,
+    setAutoSaveActive,
+    switchLevel: progressSwitchLevel,
+    recalcMergeHint,
+    recalcSynthesisPlan,
+    dismissUnlockCelebration,
+    doManualSave,
+    formatLastSaveTime,
+    handleExportSave: progressHandleExportSave,
+    applyImportedSave: progressApplyImportedSave,
+    handleImportFileSelect: progressHandleImportFileSelect,
+    handleResetProgress: progressHandleResetProgress,
+    hasUnclaimedReward,
+    calculateOfflineReward: progressCalculateOfflineReward,
+    recordLeaveTime: progressRecordLeaveTime,
+    markAsClaimed,
+  } = progress;
   const currentDesserts = currentConfig.desserts;
 
-  const [initialLoaded] = useState(() => {
-    setTimelineLevelId(initialLevelId);
-    return loadGameState(initialLevelId);
-  });
-  const initialState = initialLoaded.state;
-
-  useEffect(() => {
-    loadTimelineFromSaveData(initialLoaded.timelineData);
-    setTimelineRecords(getTimelineRecords());
-    setTimelineSummary(getTimelineSummary());
-  }, [initialLoaded.timelineData]);
-
-  const [board, setBoard] = useState<(number | null)[]>(initialState.board);
-  const [coins, setCoins] = useState<number>(initialState.coins);
-  const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
-  const [unlockedLevels, setUnlockedLevels] = useState<number[]>(initialState.unlockedLevels);
-  const [unlockTimes, setUnlockTimes] = useState<{ [key: number]: string }>(initialState.unlockTimes);
-  const [orders, setOrders] = useState<Order[]>(initialLoaded.orders);
-  const initialCooldownEnd = initialLoaded.spawnCooldownEnd;
-  const initialRemainingMs = Math.max(0, initialCooldownEnd - Date.now());
-  const initialRemainingSeconds = Math.ceil(initialRemainingMs / 1000);
-  const [spawnCooldownEnd, setSpawnCooldownEnd] = useState<number>(initialCooldownEnd);
-  const [spawnCooldown, setSpawnCooldown] = useState<number>(initialRemainingSeconds);
-  const spawnCooldownEndRef = useRef<number>(initialCooldownEnd);
-  const spawnCooldownRef = useRef<number>(initialRemainingSeconds);
   const spawnTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSpawningRef = useRef<boolean>(false);
   const initialTutorial = loadTutorialState();
@@ -1203,23 +542,8 @@ function App(): React.ReactElement {
     timestamp: 0,
   });
 
-  const [mergeHint, setMergeHint] = useState<{ sourceIndex: number; targetIndex: number; level: number } | null>(
-    findNextMergeHint(initialState.board)
-  );
-  const mergeHintRef = useRef<{ sourceIndex: number; targetIndex: number; level: number } | null>(mergeHint);
-
   const [eventMergeHint, setEventMergeHint] = useState<{ sourceIndex: number; targetIndex: number; level: number } | null>(null);
   const eventMergeHintRef = useRef<{ sourceIndex: number; targetIndex: number; level: number } | null>(null);
-
-  const [showMergeHint, setShowMergeHint] = useState<boolean>(true);
-  const showMergeHintRef = useRef<boolean>(true);
-
-  const initialSynthesisPlan = calculateSynthesisPlan(initialState.board, initialState.unlockedLevels, []);
-  const [synthesisPlan, setSynthesisPlan] = useState<SynthesisPlan>(initialSynthesisPlan);
-  const synthesisPlanRef = useRef<SynthesisPlan>(initialSynthesisPlan);
-  synthesisPlanRef.current = synthesisPlan;
-
-  const [showSynthesisPlan, setShowSynthesisPlan] = useState<boolean>(true);
 
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
   const [offlineReward, setOfflineReward] = useState<OfflineReward | null>(null);
@@ -1230,7 +554,6 @@ function App(): React.ReactElement {
   tutorialRef.current = tutorial;
 
   const [showSavePanel, setShowSavePanel] = useState<boolean>(false);
-  const [recentlyUnlocked, setRecentlyUnlocked] = useState<RecentlyUnlocked | null>(loadRecentlyUnlocked());
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
   const [showImportResult, setShowImportResult] = useState<{
@@ -1239,10 +562,7 @@ function App(): React.ReactElement {
     message: string;
     details: string[];
   } | null>(null);
-  const [lastSaveTime, setLastSaveTime] = useState<number>(Date.now());
-  const [autoSaveActive, setAutoSaveActive] = useState<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const autoSaveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [showTimelinePanel, setShowTimelinePanel] = useState<boolean>(false);
   const [timelineRecords, setTimelineRecords] = useState<TimelineRecord[]>([]);
@@ -1251,12 +571,6 @@ function App(): React.ReactElement {
 
   const [showLevelSelector, setShowLevelSelector] = useState<boolean>(false);
 
-  const boardRef = useRef<(number | null)[]>(board);
-  const coinsRef = useRef<number>(coins);
-  const maxLevelRef = useRef<number>(maxLevel);
-  const unlockedLevelsRef = useRef<number[]>(unlockedLevels);
-  const unlockTimesRef = useRef<{ [key: number]: string }>(unlockTimes);
-  const ordersRef = useRef<Order[]>(orders);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = useRef<DragState>(drag);
   const hoverRef = useRef<number | null>(null);
@@ -1268,19 +582,9 @@ function App(): React.ReactElement {
   const eventBoardRefEl = useRef<HTMLDivElement>(null);
   const eventCellRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  boardRef.current = board;
-  coinsRef.current = coins;
-  maxLevelRef.current = maxLevel;
-  unlockedLevelsRef.current = unlockedLevels;
-  unlockTimesRef.current = unlockTimes;
-  ordersRef.current = orders;
   dragRef.current = drag;
   hoverRef.current = hoverIndex;
-  spawnCooldownRef.current = spawnCooldown;
-  spawnCooldownEndRef.current = spawnCooldownEnd;
-  mergeHintRef.current = mergeHint;
   eventMergeHintRef.current = eventMergeHint;
-  showMergeHintRef.current = showMergeHint;
   eventBoardRef.current = eventBoard;
   eventCoinsRef.current = eventCoins;
   eventStepsLeftRef.current = eventStepsLeft;
@@ -1296,51 +600,10 @@ function App(): React.ReactElement {
   }, []);
 
   const switchLevel = useCallback((newLevelId: string): void => {
-    if (newLevelId === currentLevelId) {
-      setShowLevelSelector(false);
-      return;
-    }
-    saveGameState(
-      {
-        board: boardRef.current,
-        coins: coinsRef.current,
-        maxLevel: maxLevelRef.current,
-        unlockedLevels: unlockedLevelsRef.current,
-        unlockTimes: unlockTimesRef.current,
-      },
-      ordersRef.current,
-      spawnCooldownEndRef.current,
-      currentLevelId
-    );
-    saveCurrentLevelId(newLevelId);
-    setTimelineLevelId(newLevelId);
-    setCurrentLevelId(newLevelId);
-    const newConfig = getLevelConfig(newLevelId);
-    const newLoaded = loadGameState(newLevelId);
-    
-    const newCooldownEnd = newLoaded.spawnCooldownEnd;
-    const now = Date.now();
-    const newRemainingMs = Math.max(0, newCooldownEnd - now);
-    const newRemainingSeconds = Math.ceil(newRemainingMs / 1000);
-    
-    setBoard(newLoaded.state.board);
-    setCoins(newLoaded.state.coins);
-    setMaxLevel(newLoaded.state.maxLevel);
-    setUnlockedLevels(newLoaded.state.unlockedLevels);
-    setUnlockTimes(newLoaded.state.unlockTimes);
-    setOrders(newLoaded.orders.length > 0 ? newLoaded.orders : generateOrders([1], newConfig));
-    setSpawnCooldownEnd(newCooldownEnd);
-    setSpawnCooldown(newRemainingSeconds);
-    spawnCooldownEndRef.current = newCooldownEnd;
-    spawnCooldownRef.current = newRemainingSeconds;
-    
-    const hint = findNextMergeHint(newLoaded.state.board, newConfig);
-    setMergeHint(hint);
-    const plan = calculateSynthesisPlan(newLoaded.state.board, newLoaded.state.unlockedLevels, newLoaded.orders, newConfig);
-    setSynthesisPlan(plan);
+    progressSwitchLevel(newLevelId);
     setShowLevelSelector(false);
-    showToast(`🔀 已切换到 ${newConfig.name}`);
-  }, [currentLevelId, showToast]);
+    showToast(`🔀 已切换到 ${getLevelConfig(newLevelId).name}`);
+  }, [progressSwitchLevel, showToast]);
 
   const refreshTimeline = useCallback((): void => {
     setTimelineRecords(getTimelineRecords());
@@ -1348,71 +611,10 @@ function App(): React.ReactElement {
     setTimelineRefreshTrigger((prev) => prev + 1);
   }, []);
 
-  const recalcMergeHint = useCallback((newBoard: (number | null)[]): void => {
-    const hint = findNextMergeHint(newBoard, currentConfig);
-    setMergeHint(hint);
-  }, [currentConfig]);
-
   const recalcEventMergeHint = useCallback((newBoard: (number | null)[]): void => {
     const hint = findNextMergeHint(newBoard);
     setEventMergeHint(hint);
   }, []);
-
-  const recalcSynthesisPlan = useCallback(
-    (newBoard: (number | null)[], newUnlockedLevels: number[], newOrders: Order[]): void => {
-      const plan = calculateSynthesisPlan(newBoard, newUnlockedLevels, newOrders, currentConfig);
-      setSynthesisPlan(plan);
-    },
-    [currentConfig]
-  );
-
-  const dismissUnlockCelebration = useCallback((): void => {
-    const updated = recentlyUnlocked ? { ...recentlyUnlocked, seen: true } : null;
-    saveRecentlyUnlocked(updated);
-    setRecentlyUnlocked(updated);
-  }, [recentlyUnlocked]);
-
-  const doManualSave = useCallback((): void => {
-    saveGameState(
-      {
-        board: boardRef.current,
-        coins: coinsRef.current,
-        maxLevel: maxLevelRef.current,
-        unlockedLevels: unlockedLevelsRef.current,
-        unlockTimes: unlockTimesRef.current,
-      },
-      ordersRef.current,
-      spawnCooldownEndRef.current,
-      currentLevelId
-    );
-    setLastSaveTime(Date.now());
-  }, [currentLevelId]);
-
-  useEffect(() => {
-    saveGameState(
-      {
-        board,
-        coins,
-        maxLevel,
-        unlockedLevels,
-        unlockTimes,
-      },
-      orders,
-      spawnCooldownEnd,
-      currentLevelId
-    );
-    setLastSaveTime(Date.now());
-  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders, spawnCooldownEnd, currentLevelId]);
-
-  useEffect(() => {
-    recalcMergeHint(board);
-  }, [board, recalcMergeHint]);
-
-  useEffect(() => {
-    if (!eventMode) {
-      recalcSynthesisPlan(board, unlockedLevels, orders);
-    }
-  }, [board, orders, unlockedLevels, eventMode, recalcSynthesisPlan]);
 
   useEffect(() => {
     if (eventMode && eventBoard.length > 0) {
@@ -1420,230 +622,32 @@ function App(): React.ReactElement {
     }
   }, [eventBoard, eventMode, recalcEventMergeHint]);
 
-  useEffect(() => {
-    if (autoSaveActive) {
-      autoSaveTimerRef.current = setInterval(() => {
-        doManualSave();
-      }, AUTO_SAVE_INTERVAL);
-    }
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearInterval(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = null;
-      }
-    };
-  }, [autoSaveActive, doManualSave]);
-
   const handleExportSave = useCallback((): void => {
-    try {
-      const timelineData = getSaveFileTimelineData();
-      const gameData: SaveFileGameData = {
-        board: boardRef.current,
-        coins: coinsRef.current,
-        maxLevel: maxLevelRef.current,
-        unlockedLevels: unlockedLevelsRef.current,
-        unlockTimes: unlockTimesRef.current,
-        orders: ordersRef.current.map(o => ({
-          id: o.id,
-          reward: o.reward,
-          completed: o.completed,
-          items: o.items.map(it => ({ ...it })),
-        })),
-        spawnCooldownEnd: spawnCooldownEndRef.current || 0,
-        timeline: timelineData || undefined,
-      };
-      const saveFile = createSaveFile(gameData, true);
-      downloadSaveFile(saveFile);
-      showToast("💾 存档已导出到本地文件");
-    } catch (e) {
-      console.error("导出存档失败:", e);
-      showToast("❌ 导出存档失败，请重试");
-    }
+    progressHandleExportSave(showToast);
     setShowSavePanel(false);
-  }, [showToast]);
+  }, [progressHandleExportSave, showToast]);
 
   const handleImportFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    try {
-      const readResult = await readFileAsText(file);
-      if (!readResult.success) {
-        setShowImportResult({
-          type: "error",
-          title: "文件读取失败",
-          message: readResult.error,
-          details: [],
-        });
-        return;
-      }
-
-      const parseResult = parseSaveFromString(readResult.content);
-      if (!parseResult.success || !parseResult.save) {
-        setShowImportResult({
-          type: "error",
-          title: "存档格式错误",
-          message: parseResult.error || "文件内容无法解析为有效的 JSON",
-          details: [],
-        });
-        return;
-      }
-
-      const save = parseResult.save;
-      const validation = validateSaveFile(save);
-
-      if (validation.isValid) {
-        applyImportedSave(save, validation);
-      } else if (validation.errors.length > 0) {
-        setShowImportResult({
-          type: "error",
-          title: "存档校验失败",
-          message: `检测到 ${validation.errors.length} 个错误，无法导入此存档。`,
-          details: validation.errors,
-        });
-      } else {
-        applyImportedSave(save, validation);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setShowImportResult({
-        type: "error",
-        title: "导入过程发生错误",
-        message: msg,
-        details: [],
-      });
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
-  }, [showToast]);
-
-  const applyImportedSave = useCallback((save: SaveFile, validation: ValidateResult): void => {
-    try {
-      const fallback: SaveFileGameData = {
-        board: boardRef.current,
-        coins: coinsRef.current,
-        maxLevel: maxLevelRef.current,
-        unlockedLevels: unlockedLevelsRef.current,
-        unlockTimes: unlockTimesRef.current,
-        orders: ordersRef.current,
-        spawnCooldownEnd: spawnCooldownEndRef.current || 0,
-      };
-
-      const sanitized = sanitizeSaveData(save.data, fallback);
-      const newOrders: Order[] = sanitized.orders.length > 0
-        ? (sanitized.orders as Order[])
-        : generateOrders(sanitized.unlockedLevels);
-
-      const importedCooldownEnd = sanitized.spawnCooldownEnd ?? 0;
-      const now = Date.now();
-      const remainingMs = Math.max(0, importedCooldownEnd - now);
-      const remainingSeconds = Math.ceil(remainingMs / 1000);
-
-      loadTimelineFromSaveData(sanitized.timeline || null);
-
-      setBoard(sanitized.board);
-      setCoins(Math.max(sanitized.coins, 0));
-      setMaxLevel(sanitized.maxLevel);
-      setUnlockedLevels(sanitized.unlockedLevels);
-      setUnlockTimes(sanitized.unlockTimes);
-      setOrders(newOrders);
-      setSpawnCooldownEnd(importedCooldownEnd);
-      setSpawnCooldown(remainingSeconds);
-      spawnCooldownEndRef.current = importedCooldownEnd;
-      spawnCooldownRef.current = remainingSeconds;
-
-      recordImportSave(save.version, save.timestamp, sanitized.coins, sanitized.maxLevel);
-      refreshTimeline();
-
-      doManualSave();
-
-      const saveDate = new Date(save.timestamp).toLocaleString('zh-CN');
-      if (validation.warnings.length > 0) {
-        setShowImportResult({
-          type: "warning",
-          title: "导入成功（存在警告）",
-          message: `存档已恢复。保存时间：${saveDate}\n但检测到 ${validation.warnings.length} 个非关键问题：`,
-          details: validation.warnings,
-        });
-      } else {
-        setShowImportResult({
-          type: "success",
-          title: "存档导入成功！",
-          message: `进度已成功恢复到 ${saveDate}。\n金币：${sanitized.coins}，最高等级：Lv.${sanitized.maxLevel}，图鉴：${sanitized.unlockedLevels.length}/${DESSERTS.length}`,
-          details: [],
-        });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setShowImportResult({
-        type: "error",
-        title: "应用存档失败",
-        message: `发生错误: ${msg}。当前进度已保留。`,
-        details: [],
-      });
-    }
-    setShowImportModal(false);
-  }, [doManualSave, showToast, refreshTimeline]);
+    await progressHandleImportFileSelect(
+      e, 
+      showToast, 
+      refreshTimeline, 
+      setShowImportResult, 
+      setShowImportModal, 
+      fileInputRef
+    );
+  }, [progressHandleImportFileSelect, showToast, refreshTimeline]);
 
   const handleResetProgress = useCallback((): void => {
-    try {
-      resetTimeline();
-      recordReset("user_initiated");
-      refreshTimeline();
-
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(OFFLINE_DATA_KEY);
-      localStorage.removeItem(TUTORIAL_KEY);
-      localStorage.removeItem(RECENTLY_UNLOCKED_KEY);
-
-      const newBoard = createInitialBoard(currentConfig);
-      const newUnlockedLevels = [1];
-      const newUnlockTimes = { 1: new Date().toISOString() };
-
-      setBoard(newBoard);
-      setCoins(currentConfig.initialCoins);
-      setMaxLevel(1);
-      setUnlockedLevels(newUnlockedLevels);
-      setUnlockTimes(newUnlockTimes);
-      setOrders(generateOrders(newUnlockedLevels, currentConfig));
-      setRecentlyUnlocked(null);
-      setTutorial({
-        currentStep: "welcome",
-        completedSteps: [],
-        hasSpawned: false,
-        hasMerged: false,
-        hasCompletedOrder: false,
-        hasViewedCollection: false,
-        hasClaimedOffline: false,
-      });
-      setShowTutorial(true);
-      setLastSaveTime(Date.now());
-
-      const multiData = loadMultiLevelSaves();
-      multiData.levels[currentLevelId] = createEmptyLevelSave(currentLevelId);
-      saveMultiLevelSaves(multiData);
-
-      showToast("🔄 进度已重置，开始新游戏！");
-    } catch (e) {
-      console.error("重置进度失败:", e);
-      showToast("❌ 重置进度失败，请重试");
-    }
-    setShowResetConfirm(false);
-    setShowSavePanel(false);
-  }, [showToast, refreshTimeline, currentConfig, currentLevelId]);
-
-  const formatLastSaveTime = useCallback((): string => {
-    const diff = Date.now() - lastSaveTime;
-    const seconds = Math.floor(diff / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    if (hours > 0) return `${hours}小时前`;
-    if (minutes > 0) return `${minutes}分钟前`;
-    if (seconds < 5) return "刚刚";
-    return `${seconds}秒前`;
-  }, [lastSaveTime]);
+    progressHandleResetProgress(
+      showToast, 
+      refreshTimeline, 
+      setShowTutorial, 
+      setTutorial, 
+      setShowResetConfirm, 
+      setShowSavePanel
+    );
+  }, [progressHandleResetProgress, showToast, refreshTimeline]);
 
   useEffect(() => {
     saveTutorialState(tutorial);
@@ -2189,12 +1193,12 @@ function App(): React.ReactElement {
   }, [offlineReward, showToast, advanceTutorialStep, refreshTimeline]);
 
   const checkOfflineReward = useCallback((): void => {
-    const reward = calculateOfflineReward(currentConfig);
+    const reward = progressCalculateOfflineReward();
     setOfflineReward(reward);
     if (reward.isValid && hasUnclaimedReward()) {
       setShowOfflineModal(true);
     }
-  }, [currentConfig]);
+  }, [progressCalculateOfflineReward, hasUnclaimedReward]);
 
   useEffect(() => {
     checkOfflineReward();
@@ -2202,12 +1206,12 @@ function App(): React.ReactElement {
 
   useEffect(() => {
     const handleBeforeUnload = (): void => {
-      recordLeaveTime(maxLevelRef.current, currentConfig);
+      progressRecordLeaveTime();
     };
 
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === "hidden") {
-        recordLeaveTime(maxLevelRef.current, currentConfig);
+        progressRecordLeaveTime();
       } else if (document.visibilityState === "visible") {
         checkOfflineReward();
       }
@@ -2220,7 +1224,7 @@ function App(): React.ReactElement {
       window.removeEventListener("beforeunload", handleBeforeUnload);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [checkOfflineReward]);
+  }, [checkOfflineReward, progressRecordLeaveTime]);
 
   useEffect(() => {
     return () => {
@@ -2788,7 +1792,7 @@ function App(): React.ReactElement {
     } else if (action === "自动整理") {
       organizeBoard();
     } else if (action === "领取收益") {
-      const reward = calculateOfflineReward(currentConfig);
+      const reward = progressCalculateOfflineReward();
       setOfflineReward(reward);
       setShowOfflineModal(true);
     }
