@@ -1,4 +1,15 @@
-export const SAVE_VERSION = "1.0.0";
+export const SAVE_VERSION = "1.1.0";
+export const MIN_TIMELINE_SAVE_VERSION = "1.1.0";
+
+import type {
+  TimelineRecord,
+  SaveFileTimelineData,
+} from "./timelineManager";
+
+export type {
+  TimelineRecord,
+  SaveFileTimelineData,
+};
 export const SAVE_FILE_PREFIX = "dessert-shop-save";
 export const AUTO_SAVE_INTERVAL = 10000;
 
@@ -23,11 +34,13 @@ export interface SaveFileGameData {
   unlockTimes: { [key: number]: string };
   orders: SaveFileOrder[];
   spawnCooldownEnd: number;
+  timeline?: SaveFileTimelineData | null;
 }
 
 export interface SaveFileMeta {
   exportTime?: string;
   deviceInfo?: string;
+  compatibleVersion?: string;
 }
 
 export interface SaveFile {
@@ -78,6 +91,12 @@ export function compareVersions(v1: string, v2: string): number {
 export function isCompatibleVersion(version: string): boolean {
   if (!isValidVersionFormat(version)) return false;
   const result = compareVersions(version, "1.0.0");
+  return result >= 0;
+}
+
+export function hasTimelineSupport(version: string): boolean {
+  if (!isValidVersionFormat(version)) return false;
+  const result = compareVersions(version, MIN_TIMELINE_SAVE_VERSION);
   return result >= 0;
 }
 
@@ -320,6 +339,27 @@ export function validateSaveFile(save: unknown): ValidateResult {
     }
   }
 
+  if (data.timeline !== undefined && data.timeline !== null) {
+    const tl = data.timeline as Record<string, unknown>;
+    if (typeof tl !== "object" || tl === null) {
+      warnings.push("时间线数据格式异常，已忽略");
+    } else {
+      if (tl.version !== undefined && typeof tl.version !== "string") {
+        warnings.push("时间线版本格式异常，已忽略");
+      }
+      if (tl.startTime !== undefined && typeof tl.startTime !== "number") {
+        warnings.push("时间线开始时间格式异常，已忽略");
+      }
+      if (tl.records !== undefined) {
+        if (!Array.isArray(tl.records)) {
+          warnings.push("时间线记录格式错误，已忽略");
+        } else if (tl.records.length > 10000) {
+          warnings.push(`时间线记录数量过多 (${tl.records.length})，导入时将被裁剪`);
+        }
+      }
+    }
+  }
+
   return { isValid: errors.length === 0, errors, warnings };
 }
 
@@ -413,6 +453,15 @@ export function sanitizeSaveData(data: SaveFileGameData, fallbackData: SaveFileG
     result.spawnCooldownEnd = fallbackData.spawnCooldownEnd ?? 0;
   }
 
+  if (data.timeline && typeof data.timeline === "object") {
+    const tl = data.timeline as unknown as Record<string, unknown>;
+    result.timeline = {
+      version: typeof tl.version === "string" ? tl.version : "1.1.0",
+      startTime: typeof tl.startTime === "number" ? tl.startTime : Date.now(),
+      records: Array.isArray(tl.records) ? tl.records.slice(0, 500) as TimelineRecord[] : [],
+    };
+  }
+
   return result;
 }
 
@@ -434,12 +483,18 @@ export function createSaveFile(data: SaveFileGameData, includeMeta: boolean = tr
         items: o.items.map(it => ({ ...it })),
       })),
       spawnCooldownEnd: data.spawnCooldownEnd ?? 0,
+      timeline: data.timeline ? {
+        version: data.timeline.version,
+        startTime: data.timeline.startTime,
+        records: data.timeline.records.slice(0, 500),
+      } : undefined,
     },
   };
   if (includeMeta) {
     save.meta = {
       exportTime: new Date().toISOString(),
       deviceInfo: typeof navigator !== "undefined" ? `${navigator.platform || "Unknown"} - ${navigator.userAgent.slice(0, 100)}` : undefined,
+      compatibleVersion: "1.0.0",
     };
   }
   return save;

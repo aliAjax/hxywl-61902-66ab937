@@ -12,7 +12,33 @@ import {
   parseSaveFromString,
   downloadSaveFile,
   readFileAsText,
+  hasTimelineSupport,
+  SaveFileTimelineData,
 } from "./saveManager";
+import {
+  loadTimeline,
+  recordSpawn,
+  recordMove,
+  recordMerge,
+  recordSubmitOrder,
+  recordClaimOffline,
+  recordImportSave,
+  recordReset,
+  recordOrganize,
+  getTimelineRecords,
+  getTimelineSummary,
+  getSaveFileTimelineData,
+  loadTimelineFromSaveData,
+  resetTimeline,
+  formatTimelineRecord,
+  formatTimelineRecordDetailed,
+  type FormattedTimelineRecord,
+  TimelineRecord,
+  TimelineSummary,
+  MAX_TIMELINE_RECORDS,
+  MAX_REPLAY_HISTORY_DAYS,
+  TIMELINE_VERSION,
+} from "./timelineManager";
 import {
   DESSERTS,
   Dessert,
@@ -275,7 +301,7 @@ function createFallbackGameData(): SaveFileGameData {
   };
 }
 
-function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number } {
+function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number; timelineData: SaveFileTimelineData | null } {
   const fallback = createFallbackGameData();
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -326,6 +352,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
           orders: finalOrders,
           loadedFromSave: true,
           spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
+          timelineData: sanitized.timeline || null,
         };
       } else {
         console.warn("存档校验存在问题:", validateResult.errors, validateResult.warnings);
@@ -344,6 +371,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
               : generateOrders(sanitized.unlockedLevels),
             loadedFromSave: true,
             spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
+            timelineData: sanitized.timeline || null,
           };
         } catch (innerE) {
           console.error("修复损坏存档失败，使用新存档:", innerE);
@@ -364,11 +392,13 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
     orders: generateOrders([1]),
     loadedFromSave: false,
     spawnCooldownEnd: 0,
+    timelineData: null,
   };
 }
 
 function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: number): void {
   try {
+    const timelineData = getSaveFileTimelineData();
     const gameData: SaveFileGameData = {
       board: state.board,
       coins: state.coins,
@@ -382,6 +412,7 @@ function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: numb
         items: o.items.map(it => ({ ...it })),
       })),
       spawnCooldownEnd: spawnCooldownEnd || 0,
+      timeline: timelineData || undefined,
     };
     const saveFile = createSaveFile(gameData, false);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(saveFile));
@@ -947,6 +978,13 @@ type SpawnStatus = "ready" | "cooldown" | "no_coins" | "board_full";
 function App(): React.ReactElement {
   const initialLoaded = loadGameState();
   const initialState = initialLoaded.state;
+
+  useEffect(() => {
+    loadTimelineFromSaveData(initialLoaded.timelineData);
+    setTimelineRecords(getTimelineRecords());
+    setTimelineSummary(getTimelineSummary());
+  }, []);
+
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
   const [coins, setCoins] = useState<number>(initialState.coins);
   const [maxLevel, setMaxLevel] = useState<number>(initialState.maxLevel);
@@ -1056,6 +1094,11 @@ function App(): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const [showTimelinePanel, setShowTimelinePanel] = useState<boolean>(false);
+  const [timelineRecords, setTimelineRecords] = useState<TimelineRecord[]>([]);
+  const [timelineSummary, setTimelineSummary] = useState<TimelineSummary | null>(null);
+  const [timelineRefreshTrigger, setTimelineRefreshTrigger] = useState<number>(0);
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
@@ -1098,6 +1141,12 @@ function App(): React.ReactElement {
   const showToast = useCallback((message: string): void => {
     setToast(message);
     setTimeout(() => setToast(null), 1500);
+  }, []);
+
+  const refreshTimeline = useCallback((): void => {
+    setTimelineRecords(getTimelineRecords());
+    setTimelineSummary(getTimelineSummary());
+    setTimelineRefreshTrigger((prev) => prev + 1);
   }, []);
 
   const recalcMergeHint = useCallback((newBoard: (number | null)[]): void => {
@@ -1289,6 +1338,8 @@ function App(): React.ReactElement {
       const remainingMs = Math.max(0, importedCooldownEnd - now);
       const remainingSeconds = Math.ceil(remainingMs / 1000);
 
+      loadTimelineFromSaveData(sanitized.timeline || null);
+
       setBoard(sanitized.board);
       setCoins(Math.max(sanitized.coins, 0));
       setMaxLevel(sanitized.maxLevel);
@@ -1299,6 +1350,9 @@ function App(): React.ReactElement {
       setSpawnCooldown(remainingSeconds);
       spawnCooldownEndRef.current = importedCooldownEnd;
       spawnCooldownRef.current = remainingSeconds;
+
+      recordImportSave(save.version, save.timestamp, sanitized.coins, sanitized.maxLevel);
+      refreshTimeline();
 
       doManualSave();
 
@@ -1328,10 +1382,14 @@ function App(): React.ReactElement {
       });
     }
     setShowImportModal(false);
-  }, [doManualSave, showToast]);
+  }, [doManualSave, showToast, refreshTimeline]);
 
   const handleResetProgress = useCallback((): void => {
     try {
+      recordReset("user_initiated");
+      resetTimeline();
+      refreshTimeline();
+
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(OFFLINE_DATA_KEY);
       localStorage.removeItem(TUTORIAL_KEY);
@@ -1367,7 +1425,7 @@ function App(): React.ReactElement {
     }
     setShowResetConfirm(false);
     setShowSavePanel(false);
-  }, [showToast]);
+  }, [showToast, refreshTimeline]);
 
   const formatLastSaveTime = useCallback((): string => {
     const diff = Date.now() - lastSaveTime;
@@ -1915,9 +1973,13 @@ function App(): React.ReactElement {
     setCoins((prev: number) => prev + offlineReward.coins);
     markAsClaimed();
     setShowOfflineModal(false);
+
+    recordClaimOffline(offlineReward.coins, offlineReward.offlineMinutes, offlineReward.maxLevel);
+    refreshTimeline();
+
     showToast(`🎉 离线收益领取成功！+${offlineReward.coins} 金币`);
     advanceTutorialStep("offline");
-  }, [offlineReward, showToast, advanceTutorialStep]);
+  }, [offlineReward, showToast, advanceTutorialStep, refreshTimeline]);
 
   const checkOfflineReward = useCallback((): void => {
     const reward = calculateOfflineReward();
@@ -2069,6 +2131,9 @@ function App(): React.ReactElement {
       const dessert = DESSERTS[level - 1];
       showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
       
+      recordSpawn(level, emptyIndex, SPAWN_COST, freeSpawn);
+      refreshTimeline();
+      
       if (!freeSpawn) {
         advanceTutorialStep("spawn");
       }
@@ -2079,7 +2144,7 @@ function App(): React.ReactElement {
         isSpawningRef.current = false;
       }, 50);
     }
-  }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep]);
+  }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep, refreshTimeline]);
 
   const triggerSuccessFeedback = useCallback((index: number): void => {
     setFeedback({
@@ -2132,6 +2197,8 @@ function App(): React.ReactElement {
       newBoard[sourceIndex] = null;
       setBoard(newBoard);
       showToast("📦 甜品已移动");
+      recordMove(sourceIndex, targetIndex, sourceLevel);
+      refreshTimeline();
       return true;
     }
 
@@ -2150,12 +2217,17 @@ function App(): React.ReactElement {
         setShowMergeHint(false);
         showMergeHintRef.current = false;
 
+        const isNewMaxLevel = newLevel > maxLevelRef.current;
+
         setBoard(newBoard);
         setCoins((prev: number) => prev + coinReward);
         triggerSuccessFeedback(targetIndex);
         showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
 
-        if (newLevel > maxLevelRef.current) {
+        recordMerge(sourceIndex, targetIndex, sourceLevel, newLevel, coinReward, isNewMaxLevel);
+        refreshTimeline();
+
+        if (isNewMaxLevel) {
           setMaxLevel(newLevel);
           setTimeout(() => showToast(`🎉 解锁新等级：${DESSERTS[newLevel - 1].name}！`), 800);
         }
@@ -2192,7 +2264,7 @@ function App(): React.ReactElement {
       showToast("❌ 等级不同，无法合成！");
       return false;
     }
-  }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep]);
+  }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep, refreshTimeline]);
 
   const getCellIndexFromPoint = useCallback((clientX: number, clientY: number, isEvent: boolean): number | null => {
     const cells = isEvent ? eventCellRefs.current : cellRefs.current;
@@ -2440,6 +2512,9 @@ function App(): React.ReactElement {
       )
     );
 
+    recordSubmitOrder(order.id, order.items, order.reward);
+    refreshTimeline();
+
     showToast(`🎉 订单完成！+${order.reward}金币`);
     advanceTutorialStep("order");
 
@@ -2450,7 +2525,7 @@ function App(): React.ReactElement {
         return [...remaining, ...newOrders];
       });
     }, 1500);
-  }, [showToast, advanceTutorialStep]);
+  }, [showToast, advanceTutorialStep, refreshTimeline]);
 
   const handleRefreshOrders = useCallback((): void => {
     if (unlockedLevelsRef.current.length === 0) {
@@ -2479,6 +2554,9 @@ function App(): React.ReactElement {
     showMergeHintRef.current = false;
     setBoard(newBoard);
     
+    recordOrganize(nonNullCells.length);
+    refreshTimeline();
+    
     setTimeout(() => {
       const nextHint = findNextMergeHint(newBoard);
       if (nextHint) {
@@ -2489,7 +2567,7 @@ function App(): React.ReactElement {
     }, 300);
     
     showToast("🧹 整理完成！相同等级甜品已聚拢");
-  }, [showToast]);
+  }, [showToast, refreshTimeline]);
 
   const handleAction = (action: string): void => {
     if (action === "生成甜品") {
@@ -2783,6 +2861,80 @@ function App(): React.ReactElement {
               >
                 <span className="save-action-icon">🔄</span>
                 <span>重置进度</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTimelinePanel && (
+        <div className="modal-overlay" onClick={() => setShowTimelinePanel(false)}>
+          <div className="modal-content timeline-panel-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowTimelinePanel(false)}>×</button>
+            <div className="timeline-panel-icon">📜</div>
+            <h2 className="timeline-panel-title">操作时间线</h2>
+            
+            {timelineSummary && (
+              <div className="timeline-summary">
+                <div className="timeline-summary-row">
+                  <span className="timeline-summary-label">总记录数</span>
+                  <span className="timeline-summary-value">{timelineSummary.totalActions} / {MAX_TIMELINE_RECORDS}</span>
+                </div>
+                <div className="timeline-summary-row">
+                  <span className="timeline-summary-label">记录周期</span>
+                  <span className="timeline-summary-value">最近 {MAX_REPLAY_HISTORY_DAYS} 天</span>
+                </div>
+                <div className="timeline-summary-row">
+                  <span className="timeline-summary-label">数据版本</span>
+                  <span className="timeline-summary-value">v{TIMELINE_VERSION}</span>
+                </div>
+                <div className="timeline-stats">
+                  <span className="timeline-stat">🎯 生成: {timelineSummary.totalSpawns}</span>
+                  <span className="timeline-stat">📦 移动: {timelineSummary.totalMoves}</span>
+                  <span className="timeline-stat">✨ 合成: {timelineSummary.totalMerges}</span>
+                  <span className="timeline-stat">📋 订单: {timelineSummary.totalOrders}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="timeline-records-container">
+              {timelineRecords.length === 0 ? (
+                <div className="timeline-empty">
+                  <div className="timeline-empty-icon">📭</div>
+                  <p>暂无操作记录</p>
+                  <small>开始游戏后，你的操作将记录在这里</small>
+                </div>
+              ) : (
+                <div className="timeline-records-list">
+                  {[...timelineRecords].reverse().map((record, index) => {
+                    const formatted = formatTimelineRecordDetailed(record);
+                    return (
+                      <div key={`${record.timestamp}-${index}`} className="timeline-record-item">
+                        <div className="timeline-record-icon">{formatted.icon}</div>
+                        <div className="timeline-record-content">
+                          <div className="timeline-record-title">{formatted.title}</div>
+                          <div className="timeline-record-desc">{formatted.description}</div>
+                        </div>
+                        <div className="timeline-record-time">
+                          {new Date(record.timestamp).toLocaleTimeString('zh-CN', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="timeline-footer">
+              <button
+                className="timeline-action-btn"
+                onClick={() => { refreshTimeline(); showToast("🔄 时间线已刷新"); }}
+              >
+                <span>🔄</span> 刷新
               </button>
             </div>
           </div>
@@ -3568,6 +3720,12 @@ function App(): React.ReactElement {
               <small>💾 存档管理</small>
               <strong className="save-entry-text">
                 {autoSaveActive ? `保存于${formatLastSaveTime()}` : "自动保存已暂停"}
+              </strong>
+            </article>
+            <article className="timeline-entry-article" onClick={() => { setShowTimelinePanel(true); refreshTimeline(); }}>
+              <small>📜 操作时间线</small>
+              <strong className="timeline-entry-text">
+                {timelineSummary ? `${timelineSummary.totalActions} 条记录` : "暂无记录"}
               </strong>
             </article>
           </>
