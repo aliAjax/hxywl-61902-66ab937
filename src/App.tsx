@@ -305,8 +305,8 @@ function loadMultiLevelSaves(): MultiLevelSaveData {
         gameData = parsed.data as SaveFileGameData;
       } else {
         gameData = {
-          board: parsed.board || Array(BOARD_SIZE).fill(null),
-          coins: typeof parsed.coins === "number" ? parsed.coins : INITIAL_COINS,
+          board: parsed.board || Array(LEVEL_CONFIGS.classic.boardSize).fill(null),
+          coins: typeof parsed.coins === "number" ? parsed.coins : LEVEL_CONFIGS.classic.initialCoins,
           maxLevel: parsed.maxLevel || 1,
           unlockedLevels: parsed.unlockedLevels || [1],
           unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
@@ -1117,19 +1117,23 @@ function calculateEventResult(
 type SpawnStatus = "ready" | "cooldown" | "no_coins" | "board_full";
 
 function App(): React.ReactElement {
-  const [currentLevelId, setCurrentLevelId] = useState<string>(loadCurrentLevelId);
+  const initialLevelId = loadCurrentLevelId();
+
+  const [currentLevelId, setCurrentLevelId] = useState<string>(initialLevelId);
   const currentConfig = getLevelConfig(currentLevelId);
   const currentDesserts = currentConfig.desserts;
 
-  const initialLoaded = loadGameState(currentLevelId);
+  const [initialLoaded] = useState(() => {
+    setTimelineLevelId(initialLevelId);
+    return loadGameState(initialLevelId);
+  });
   const initialState = initialLoaded.state;
 
   useEffect(() => {
     loadTimelineFromSaveData(initialLoaded.timelineData);
     setTimelineRecords(getTimelineRecords());
     setTimelineSummary(getTimelineSummary());
-    setTimelineLevelId(currentLevelId);
-  }, []);
+  }, [initialLoaded.timelineData]);
 
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
   const [coins, setCoins] = useState<number>(initialState.coins);
@@ -1247,46 +1251,6 @@ function App(): React.ReactElement {
 
   const [showLevelSelector, setShowLevelSelector] = useState<boolean>(false);
 
-  const switchLevel = useCallback((newLevelId: string): void => {
-    if (newLevelId === currentLevelId) {
-      setShowLevelSelector(false);
-      return;
-    }
-    saveGameState(
-      {
-        board: boardRef.current,
-        coins: coinsRef.current,
-        maxLevel: maxLevelRef.current,
-        unlockedLevels: unlockedLevelsRef.current,
-        unlockTimes: unlockTimesRef.current,
-      },
-      ordersRef.current,
-      spawnCooldownEndRef.current,
-      currentLevelId
-    );
-    saveCurrentLevelId(newLevelId);
-    setCurrentLevelId(newLevelId);
-    setTimelineLevelId(newLevelId);
-    const newConfig = getLevelConfig(newLevelId);
-    const newLoaded = loadGameState(newLevelId);
-    setBoard(newLoaded.state.board);
-    setCoins(newLoaded.state.coins);
-    setMaxLevel(newLoaded.state.maxLevel);
-    setUnlockedLevels(newLoaded.state.unlockedLevels);
-    setUnlockTimes(newLoaded.state.unlockTimes);
-    setOrders(newLoaded.orders.length > 0 ? newLoaded.orders : generateOrders([1], newConfig));
-    setSpawnCooldownEnd(newLoaded.spawnCooldownEnd);
-    setSpawnCooldown(0);
-    spawnCooldownEndRef.current = newLoaded.spawnCooldownEnd;
-    spawnCooldownRef.current = 0;
-    const hint = findNextMergeHint(newLoaded.state.board, newConfig);
-    setMergeHint(hint);
-    const plan = calculateSynthesisPlan(newLoaded.state.board, newLoaded.state.unlockedLevels, newLoaded.orders, newConfig);
-    setSynthesisPlan(plan);
-    setShowLevelSelector(false);
-    showToast(`🔀 已切换到 ${newConfig.name}`);
-  }, [currentLevelId, showToast]);
-
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
@@ -1330,6 +1294,53 @@ function App(): React.ReactElement {
     setToast(message);
     setTimeout(() => setToast(null), 1500);
   }, []);
+
+  const switchLevel = useCallback((newLevelId: string): void => {
+    if (newLevelId === currentLevelId) {
+      setShowLevelSelector(false);
+      return;
+    }
+    saveGameState(
+      {
+        board: boardRef.current,
+        coins: coinsRef.current,
+        maxLevel: maxLevelRef.current,
+        unlockedLevels: unlockedLevelsRef.current,
+        unlockTimes: unlockTimesRef.current,
+      },
+      ordersRef.current,
+      spawnCooldownEndRef.current,
+      currentLevelId
+    );
+    saveCurrentLevelId(newLevelId);
+    setTimelineLevelId(newLevelId);
+    setCurrentLevelId(newLevelId);
+    const newConfig = getLevelConfig(newLevelId);
+    const newLoaded = loadGameState(newLevelId);
+    
+    const newCooldownEnd = newLoaded.spawnCooldownEnd;
+    const now = Date.now();
+    const newRemainingMs = Math.max(0, newCooldownEnd - now);
+    const newRemainingSeconds = Math.ceil(newRemainingMs / 1000);
+    
+    setBoard(newLoaded.state.board);
+    setCoins(newLoaded.state.coins);
+    setMaxLevel(newLoaded.state.maxLevel);
+    setUnlockedLevels(newLoaded.state.unlockedLevels);
+    setUnlockTimes(newLoaded.state.unlockTimes);
+    setOrders(newLoaded.orders.length > 0 ? newLoaded.orders : generateOrders([1], newConfig));
+    setSpawnCooldownEnd(newCooldownEnd);
+    setSpawnCooldown(newRemainingSeconds);
+    spawnCooldownEndRef.current = newCooldownEnd;
+    spawnCooldownRef.current = newRemainingSeconds;
+    
+    const hint = findNextMergeHint(newLoaded.state.board, newConfig);
+    setMergeHint(hint);
+    const plan = calculateSynthesisPlan(newLoaded.state.board, newLoaded.state.unlockedLevels, newLoaded.orders, newConfig);
+    setSynthesisPlan(plan);
+    setShowLevelSelector(false);
+    showToast(`🔀 已切换到 ${newConfig.name}`);
+  }, [currentLevelId, showToast]);
 
   const refreshTimeline = useCallback((): void => {
     setTimelineRecords(getTimelineRecords());
@@ -2502,7 +2513,7 @@ function App(): React.ReactElement {
       const idxStr = cellEl.getAttribute("data-index");
       if (idxStr === null) return;
       const index = Number(idxStr);
-      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : BOARD_SIZE;
+      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : currentConfig.boardSize;
       const currentBoard = isEventBoard ? eventBoardRef.current : boardRef.current;
       if (isNaN(index) || index < 0 || index >= boardSize) return;
       if (currentBoard[index] === null) return;
@@ -2623,7 +2634,7 @@ function App(): React.ReactElement {
       const idxStr = cellEl.getAttribute("data-index");
       if (idxStr === null) return;
       const index = Number(idxStr);
-      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : BOARD_SIZE;
+      const boardSize = isEventBoard ? EVENT_BOARD_SIZE : currentConfig.boardSize;
       const currentBoard = isEventBoard ? eventBoardRef.current : boardRef.current;
       if (isNaN(index) || index < 0 || index >= boardSize) return;
       if (currentBoard[index] !== null) return;
@@ -2644,26 +2655,26 @@ function App(): React.ReactElement {
         return;
       }
 
-      if (coinsRef.current < SPAWN_COST) {
-        showToast(`💰 金币不足！需要 ${SPAWN_COST} 金币`);
+      if (coinsRef.current < currentConfig.spawnCost) {
+        showToast(`💰 金币不足！需要 ${currentConfig.spawnCost} 金币`);
         return;
       }
 
       try {
         isSpawningRef.current = true;
-        const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
-        const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
-        const level = Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL;
+        const maxSpawnLevel = Math.min(maxLevelRef.current, currentConfig.spawnMaxLevel);
+        const levelRange = maxSpawnLevel - currentConfig.spawnMinLevel + 1;
+        const level = Math.floor(Math.random() * levelRange) + currentConfig.spawnMinLevel;
 
-        setCoins((prev: number) => prev - SPAWN_COST);
+        setCoins((prev: number) => prev - currentConfig.spawnCost);
         const newBoard = [...boardRef.current];
         newBoard[index] = level;
         setBoard(newBoard);
 
         startSpawnCooldown();
 
-        const dessert = DESSERTS[level - 1];
-        showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${SPAWN_COST}💰`);
+        const dessert = currentDesserts[level - 1];
+        showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！-${currentConfig.spawnCost}💰`);
         advanceTutorialStep("spawn");
       } finally {
         setTimeout(() => {
@@ -2685,7 +2696,7 @@ function App(): React.ReactElement {
       window.removeEventListener("pointercancel", handleGlobalPointerCancel);
       document.removeEventListener("click", handleGlobalClick, true);
     };
-  }, [getCellIndexFromPoint, performMerge, eventPerformMerge, eventSpawnDessert, showToast, advanceTutorialStep, eventMode]);
+  }, [getCellIndexFromPoint, performMerge, eventPerformMerge, eventSpawnDessert, showToast, advanceTutorialStep, eventMode, currentConfig]);
 
   const handleSubmitOrder = useCallback((order: Order): void => {
     if (order.completed) {
@@ -4206,7 +4217,7 @@ function App(): React.ReactElement {
           <>
           <h2>核心玩法</h2>
           <p>🎯 <strong>新手指引：</strong>先拖动两个相同等级的甜品叠在一起合成更高级甜品，可立即获得金币奖励！有了金币后再点击"生成甜品"按钮或空格继续生产。</p>
-          <p>✨ <strong>合成规则：</strong>相同等级甜品合并升级，不同等级无法合成。每次生成消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 甜品。</p>
+          <p>✨ <strong>合成规则：</strong>相同等级甜品合并升级，不同等级无法合成。每次生成消耗 {currentConfig.spawnCost} 金币，冷却 {currentConfig.spawnCooldownSeconds} 秒，产出 Lv.{currentConfig.spawnMinLevel}-{currentConfig.spawnMaxLevel} 甜品。</p>
           <p>🧹 <strong>棋盘管理：</strong>棋盘满时请点击"自动整理"聚拢相同等级，方便后续拖拽合成。</p>
 
           <div className="orders-panel tutorial-orders-panel">
@@ -4623,7 +4634,7 @@ function App(): React.ReactElement {
               if (action === "生成甜品") {
                 const spawnStatus = getSpawnStatus();
                 const now = Date.now();
-                const totalMs = SPAWN_COOLDOWN_SECONDS * 1000;
+                const totalMs = currentConfig.spawnCooldownSeconds * 1000;
                 const remainingMs = Math.max(0, spawnCooldownEnd - now);
                 const elapsedMs = Math.max(0, totalMs - remainingMs);
                 const cooldownPercent = spawnStatus === "cooldown"
@@ -4654,11 +4665,11 @@ function App(): React.ReactElement {
                             <span>🧁</span>
                           </div>
                           <div className="spawn-queue-info">
-                            <div className="spawn-queue-level">Lv.{SPAWN_MIN_LEVEL} - Lv.{SPAWN_MAX_LEVEL}</div>
+                            <div className="spawn-queue-level">Lv.{currentConfig.spawnMinLevel} - Lv.{currentConfig.spawnMaxLevel}</div>
                             <div className="spawn-queue-desc">
-                              {isReady && `点击生成 · 消耗 ${SPAWN_COST}💰`}
+                              {isReady && `点击生成 · 消耗 ${currentConfig.spawnCost}💰`}
                               {isCooldown && `下一个生成 · 还需 ${spawnCooldown}s`}
-                              {isNoCoins && `需要 ${SPAWN_COST}💰 · 当前 ${coins}💰`}
+                              {isNoCoins && `需要 ${currentConfig.spawnCost}💰 · 当前 ${coins}💰`}
                               {isBoardFull && "棋盘无空位，请整理或合并"}
                             </div>
                           </div>
@@ -4686,9 +4697,9 @@ function App(): React.ReactElement {
                         {isBoardFull && "🧹 棋盘已满"}
                       </span>
                       <span className="action-sub-text">
-                        {isReady && `消耗 ${SPAWN_COST} 金币 · Lv.${SPAWN_MIN_LEVEL}-${SPAWN_MAX_LEVEL}`}
+                        {isReady && `消耗 ${currentConfig.spawnCost} 金币 · Lv.${currentConfig.spawnMinLevel}-${currentConfig.spawnMaxLevel}`}
                         {isCooldown && "冷却完成后自动解锁"}
-                        {isNoCoins && `需要 ${SPAWN_COST} 金币 · 当前 ${coins} 金币`}
+                        {isNoCoins && `需要 ${currentConfig.spawnCost} 金币 · 当前 ${coins} 金币`}
                         {isBoardFull && "请合并甜品或点击自动整理"}
                       </span>
                       {isCooldown && (
@@ -4719,13 +4730,13 @@ function App(): React.ReactElement {
       <section className="result-panel">
         <h2>游戏说明</h2>
         <p>
-          🎮 <strong>新手指引（必看）：</strong>开局免费送 {INITIAL_COINS} 金币和 {INITIAL_SPAWN_COUNT} 个糖果！先<strong>拖拽两个相同等级的甜品叠在一起</strong>合成更高级甜品，每次合成立即获得金币。有了金币就可以继续生成甜品啦~<br />
-          🍰 <strong>生成甜品：</strong>点击"生成甜品"按钮或棋盘空格，消耗 {SPAWN_COST} 金币，冷却 {SPAWN_COOLDOWN_SECONDS} 秒，产出 Lv.{SPAWN_MIN_LEVEL}-{SPAWN_MAX_LEVEL} 的低等级甜品。<br />
-          ⭐ <strong>合成奖励：</strong>两个 Lv.N 甜品合成一个 Lv.N+1 甜品，获得 (N+1)×10 金币。等级越高奖励越丰厚！<br />
+          🎮 <strong>新手指引（必看）：</strong>开局免费送 {currentConfig.initialCoins} 金币和 {currentConfig.initialSpawnCount} 个{currentDesserts[0]?.name}！先<strong>拖拽两个相同等级的甜品叠在一起</strong>合成更高级甜品，每次合成立即获得金币。有了金币就可以继续生成甜品啦~<br />
+          🍰 <strong>生成甜品：</strong>点击"生成甜品"按钮或棋盘空格，消耗 {currentConfig.spawnCost} 金币，冷却 {currentConfig.spawnCooldownSeconds} 秒，产出 Lv.{currentConfig.spawnMinLevel}-{currentConfig.spawnMaxLevel} 的低等级甜品。<br />
+          ⭐ <strong>合成奖励：</strong>两个 Lv.N 甜品合成一个 Lv.N+1 甜品，获得 (N+1)×{currentConfig.mergeRewardCoefficient} 金币。等级越高奖励越丰厚！<br />
           📋 <strong>订单系统：</strong>完成订单栏中的订单可获得额外金币奖励。提交棋盘中对应数量的甜品即可完成订单，完成后会自动刷新新订单。<br />
           🧹 <strong>自动整理：</strong>棋盘满或杂乱时，点击"自动整理"将相同等级甜品聚拢，方便拖拽合成。<br />
           💾 <strong>存档机制：</strong>所有游戏数据自动保存到浏览器本地，刷新页面后进度不会丢失。<br />
-          🎯 <strong>终极目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部 10 种甜品图鉴！
+          🎯 <strong>终极目标：</strong>尽可能合成更高级的甜品，完成订单获得额外奖励，收集全部 {currentDesserts.length} 种甜品图鉴！
         </p>
       </section>
     </main>
