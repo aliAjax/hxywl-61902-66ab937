@@ -52,6 +52,8 @@ import {
   AchievementDef,
   createInitialAchievementState,
   checkAchievementCompletion,
+  SynthesisPlan,
+  calculateSynthesisPlan,
 } from "./gameConfig";
 import SimulationPanel from "./SimulationPanel";
 
@@ -1024,6 +1026,13 @@ function App(): React.ReactElement {
   const [showMergeHint, setShowMergeHint] = useState<boolean>(true);
   const showMergeHintRef = useRef<boolean>(true);
 
+  const initialSynthesisPlan = calculateSynthesisPlan(initialState.board, initialState.unlockedLevels, []);
+  const [synthesisPlan, setSynthesisPlan] = useState<SynthesisPlan>(initialSynthesisPlan);
+  const synthesisPlanRef = useRef<SynthesisPlan>(initialSynthesisPlan);
+  synthesisPlanRef.current = synthesisPlan;
+
+  const [showSynthesisPlan, setShowSynthesisPlan] = useState<boolean>(true);
+
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
   const [offlineReward, setOfflineReward] = useState<OfflineReward | null>(null);
 
@@ -1101,6 +1110,14 @@ function App(): React.ReactElement {
     setEventMergeHint(hint);
   }, []);
 
+  const recalcSynthesisPlan = useCallback(
+    (newBoard: (number | null)[], newUnlockedLevels: number[], newOrders: Order[]): void => {
+      const plan = calculateSynthesisPlan(newBoard, newUnlockedLevels, newOrders);
+      setSynthesisPlan(plan);
+    },
+    []
+  );
+
   const dismissUnlockCelebration = useCallback((): void => {
     const updated = recentlyUnlocked ? { ...recentlyUnlocked, seen: true } : null;
     saveRecentlyUnlocked(updated);
@@ -1140,6 +1157,12 @@ function App(): React.ReactElement {
   useEffect(() => {
     recalcMergeHint(board);
   }, [board, recalcMergeHint]);
+
+  useEffect(() => {
+    if (!eventMode) {
+      recalcSynthesisPlan(board, unlockedLevels, orders);
+    }
+  }, [board, orders, unlockedLevels, eventMode, recalcSynthesisPlan]);
 
   useEffect(() => {
     if (eventMode && eventBoard.length > 0) {
@@ -3831,6 +3854,185 @@ function App(): React.ReactElement {
                 );
               })
             )}
+          </div>
+
+          <div className="synthesis-plan-panel">
+            <div className="synthesis-plan-header">
+              <div className="synthesis-plan-title">
+                <span className="synthesis-plan-title-icon">🧭</span>
+                <span>合成规划</span>
+              </div>
+              <button
+                className="synthesis-plan-refresh-btn"
+                onClick={() => recalcSynthesisPlan(board, unlockedLevels, orders)}
+              >
+                🔄 刷新
+              </button>
+            </div>
+
+            {synthesisPlan.nextTargetLevel !== null && synthesisPlan.nextTargetDessert !== null && (
+              <div className="synthesis-plan-section">
+                <div className="synthesis-plan-section-title">
+                  <span>🎯</span>
+                  <span>下一个解锁目标</span>
+                </div>
+                <div className={`synthesis-plan-target-card ${synthesisPlan.shortfallLv1Value === 0 ? "complete" : ""}`}>
+                  <span className="synthesis-plan-target-dessert">
+                    {synthesisPlan.nextTargetDessert.emoji}
+                  </span>
+                  <div className="synthesis-plan-target-name">
+                    {synthesisPlan.nextTargetDessert.name}
+                  </div>
+                  <span className="synthesis-plan-target-level">
+                    Lv.{synthesisPlan.nextTargetLevel}
+                  </span>
+                  <div className="synthesis-plan-progress-section">
+                    <div className="synthesis-plan-progress-bar">
+                      <div
+                        className="synthesis-plan-progress-fill"
+                        style={{
+                          width: `${Math.min(100, synthesisPlan.targetLv1Value > 0
+                            ? (synthesisPlan.totalLv1Value / synthesisPlan.targetLv1Value) * 100
+                            : 0)}%`,
+                        }}
+                      />
+                      <span className="synthesis-plan-progress-text">
+                        {synthesisPlan.shortfallLv1Value === 0
+                          ? "材料已就绪 ✓"
+                          : `${Math.round((synthesisPlan.totalLv1Value / synthesisPlan.targetLv1Value) * 100)}%`}
+                      </span>
+                    </div>
+                    <div className="synthesis-plan-shortfall-text">
+                      {synthesisPlan.shortfallLv1Value === 0 ? (
+                        <strong>可以直接合成解锁！</strong>
+                      ) : (
+                        <>
+                          还需约 <strong>{synthesisPlan.shortfallLv1Value}</strong> 个 Lv.1 甜品
+                          （或 <strong>{Math.ceil(synthesisPlan.shortfallLv1Value / 2)}</strong> 个 Lv.2 甜品）
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {synthesisPlan.isAllUnlocked && (
+              <div className="synthesis-plan-section">
+                <div className="synthesis-plan-empty">
+                  🏆 恭喜！所有甜品已全部解锁！
+                </div>
+              </div>
+            )}
+
+            <div className="synthesis-plan-section">
+              <div className="synthesis-plan-reachable">
+                <div className="synthesis-plan-reachable-label">
+                  <span>⭐</span>
+                  <span>当前材料最高可合到</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span className="synthesis-plan-reachable-dessert">
+                    {synthesisPlan.maxReachableLevel > 0 && synthesisPlan.maxReachableLevel <= DESSERTS.length
+                      ? DESSERTS[synthesisPlan.maxReachableLevel - 1]?.emoji
+                      : "❓"}
+                  </span>
+                  <span className="synthesis-plan-reachable-value">
+                    Lv.{synthesisPlan.maxReachableLevel}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {synthesisPlan.boardCounts.length > 0 && (
+              <div className="synthesis-plan-section">
+                <div className="synthesis-plan-section-title">
+                  <span>📊</span>
+                  <span>棋盘材料分布</span>
+                </div>
+                <div className="synthesis-plan-level-list">
+                  {synthesisPlan.boardCounts
+                    .filter((c) => c.count > 0)
+                    .sort((a, b) => b.level - a.level)
+                    .map((levelCount) => {
+                      const dessert = levelCount.dessert;
+                      const effectiveEntry = synthesisPlan.effectiveCounts.find(
+                        (e) => e.level === levelCount.level
+                      );
+                      const carriedUp = effectiveEntry?.carriedUp ?? 0;
+                      const hasCarry = carriedUp > 0;
+                      const isTargetLevel = synthesisPlan.nextTargetLevel !== null &&
+                        levelCount.level === synthesisPlan.nextTargetLevel - 1;
+                      return (
+                        <div key={levelCount.level} className="synthesis-plan-level-row">
+                          <span className="synthesis-plan-level-emoji">{dessert.emoji}</span>
+                          <span className="synthesis-plan-level-name">
+                            Lv.{levelCount.level} {dessert.name}
+                          </span>
+                          <span className="synthesis-plan-level-count">
+                            ×{levelCount.count}
+                          </span>
+                          {hasCarry && (
+                            <span className="synthesis-plan-carry-tag">
+                              可合成 {carriedUp} 个 Lv.{levelCount.level + 1}
+                            </span>
+                          )}
+                          {isTargetLevel && levelCount.count >= 2 && (
+                            <span className="synthesis-plan-carry-tag" style={{ color: '#22c55e', background: 'rgba(34, 197, 94, 0.15)' }}>
+                              可解锁 ✓
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            <div className="synthesis-plan-section">
+              <div className="synthesis-plan-section-title">
+                <span>✨</span>
+                <span>优先合成建议</span>
+              </div>
+              {synthesisPlan.suggestions.length > 0 ? (
+                <div className="synthesis-plan-suggestion-list">
+                  {synthesisPlan.suggestions.slice(0, 4).map((suggestion, idx) => {
+                    const dessert = suggestion.dessert;
+                    const resultDessert = DESSERTS[suggestion.level];
+                    const isHighPriority = idx === 0;
+                    return (
+                      <div
+                        key={suggestion.level}
+                        className={`synthesis-plan-suggestion-item ${isHighPriority ? "high" : ""}`}
+                      >
+                        <div className="synthesis-plan-suggestion-header">
+                          <div className="synthesis-plan-suggestion-dessert">
+                            <span className="synthesis-plan-suggestion-emoji">{dessert.emoji}</span>
+                            <span className="synthesis-plan-suggestion-name">{dessert.name}</span>
+                          </div>
+                          <span className="synthesis-plan-suggestion-pairs">
+                            {suggestion.pairs} 对可合
+                          </span>
+                        </div>
+                        <div className="synthesis-plan-suggestion-reason">
+                          合成 →
+                          <span className="synthesis-plan-suggestion-arrow"> </span>
+                          <span className="synthesis-plan-suggestion-result">
+                            {resultDessert?.emoji ?? "✨"} {resultDessert?.name ?? "更高级甜品"}
+                          </span>
+                          <br />
+                          <span style={{ color: "#94a3b8" }}>{suggestion.reason}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="synthesis-plan-empty">
+                  棋盘上暂无可以合成的甜品
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="collection-panel">

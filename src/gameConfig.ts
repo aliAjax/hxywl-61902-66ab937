@@ -317,3 +317,244 @@ export function calculateEventResult(
   const totalShards = eventShardsEarned + Math.floor(maxLevel / 2) + ordersCompleted;
   return { coins: totalCoins, shards: totalShards };
 }
+
+export interface LevelCount {
+  level: number;
+  count: number;
+  dessert: Dessert;
+}
+
+export interface EffectiveLevelCount extends LevelCount {
+  carriedUp: number;
+  effectiveCount: number;
+}
+
+export interface SynthesisSuggestion {
+  level: number;
+  dessert: Dessert;
+  reason: string;
+  priorityScore: number;
+  pairs: number;
+  sourceIndices: number[];
+}
+
+export interface OrderShortfall {
+  orderId: number;
+  canComplete: boolean;
+  missingItems: { level: number; count: number; dessert: Dessert }[];
+}
+
+export interface SynthesisPlan {
+  nextTargetLevel: number | null;
+  nextTargetDessert: Dessert | null;
+  isAllUnlocked: boolean;
+
+  boardCounts: LevelCount[];
+  effectiveCounts: EffectiveLevelCount[];
+  maxReachableLevel: number;
+
+  targetShortfall: {
+    level: number;
+    needed: number;
+    have: number;
+    shortfall: number;
+    dessert: Dessert;
+  }[];
+
+  suggestions: SynthesisSuggestion[];
+  orderShortfalls: OrderShortfall[];
+
+  totalLv1Value: number;
+  targetLv1Value: number;
+  shortfallLv1Value: number;
+}
+
+export function calculateSynthesisPlan(
+  board: (number | null)[],
+  unlockedLevels: number[],
+  orders: { id: number; items: { level: number; count: number }[] }[]
+): SynthesisPlan {
+  const maxUnlocked = Math.max(...unlockedLevels, 0);
+  const nextLevel = maxUnlocked + 1;
+  const isAllUnlocked = maxUnlocked >= DESSERTS.length;
+  const nextTargetLevel = isAllUnlocked ? null : nextLevel;
+  const nextTargetDessert = isAllUnlocked ? null : DESSERTS[nextLevel - 1];
+  const parentLevel = maxUnlocked;
+
+  const levelCounts = new Map<number, number>();
+  const levelIndices = new Map<number, number[]>();
+  for (let i = 0; i < board.length; i++) {
+    const cell = board[i];
+    if (cell !== null && cell >= 1 && cell <= DESSERTS.length) {
+      levelCounts.set(cell, (levelCounts.get(cell) || 0) + 1);
+      if (!levelIndices.has(cell)) {
+        levelIndices.set(cell, []);
+      }
+      levelIndices.get(cell)!.push(i);
+    }
+  }
+
+  const boardCounts: LevelCount[] = [];
+  for (let lv = 1; lv <= DESSERTS.length; lv++) {
+    const count = levelCounts.get(lv) || 0;
+    if (count > 0 || lv <= maxUnlocked) {
+      boardCounts.push({
+        level: lv,
+        count,
+        dessert: DESSERTS[lv - 1],
+      });
+    }
+  }
+
+  const effectiveCounts: EffectiveLevelCount[] = [];
+  let carryFromBelow = 0;
+  for (let lv = 1; lv <= DESSERTS.length; lv++) {
+    const raw = levelCounts.get(lv) || 0;
+    const totalAtLevel = raw + carryFromBelow;
+    const carried = Math.floor(totalAtLevel / 2);
+    const leftover = totalAtLevel - carried * 2;
+
+    effectiveCounts.push({
+      level: lv,
+      count: raw,
+      dessert: DESSERTS[lv - 1],
+      carriedUp: carried,
+      effectiveCount: leftover,
+    });
+
+    carryFromBelow = carried;
+  }
+
+  let maxReachableLevel = 0;
+  for (let i = effectiveCounts.length - 1; i >= 0; i--) {
+    if (effectiveCounts[i].effectiveCount > 0 || effectiveCounts[i].carriedUp > 0) {
+      maxReachableLevel = effectiveCounts[i].level + (effectiveCounts[i].carriedUp > 0 ? 1 : 0);
+      if (maxReachableLevel > DESSERTS.length) {
+        maxReachableLevel = DESSERTS.length;
+      }
+      break;
+    }
+  }
+
+  const targetShortfall: SynthesisPlan["targetShortfall"] = [];
+  let totalLv1Value = 0;
+  let targetLv1Value = 0;
+  let shortfallLv1Value = 0;
+
+  if (nextTargetLevel && nextTargetDessert) {
+    for (let lv = parentLevel; lv >= 1; lv--) {
+      const needed = lv === parentLevel ? 2 : 0;
+      const effectiveEntry = effectiveCounts.find(e => e.level === lv);
+      const have = effectiveEntry?.effectiveCount || 0;
+      const shortfall = Math.max(0, needed - have);
+
+      if (lv === parentLevel || (effectiveEntry && effectiveEntry.count > 0)) {
+        targetShortfall.push({
+          level: lv,
+          needed,
+          have,
+          shortfall,
+          dessert: DESSERTS[lv - 1],
+        });
+      }
+    }
+
+    const parentLv1Value = Math.pow(2, parentLevel - 1);
+    targetLv1Value = 2 * parentLv1Value;
+
+    for (const [lv, count] of levelCounts.entries()) {
+      totalLv1Value += count * Math.pow(2, lv - 1);
+    }
+
+    shortfallLv1Value = Math.max(0, targetLv1Value - totalLv1Value);
+  }
+
+  const suggestions: SynthesisSuggestion[] = [];
+
+  const mergeableLevels = Array.from(levelCounts.entries())
+    .filter(([, count]) => count >= 2)
+    .map(([level]) => level)
+    .sort((a, b) => b - a);
+
+  for (const level of mergeableLevels) {
+    const dessert = DESSERTS[level - 1];
+    const count = levelCounts.get(level) || 0;
+    const pairs = Math.floor(count / 2);
+    const indices = levelIndices.get(level) || [];
+
+    let priorityScore = level * 10;
+    let reason = "";
+
+    if (nextTargetLevel && level === parentLevel) {
+      priorityScore += 100;
+      reason = "🎯 解锁下一等级的关键材料";
+    } else if (nextTargetLevel && level < parentLevel) {
+      const distance = parentLevel - level;
+      priorityScore += Math.max(0, 50 - distance * 10);
+      reason = `📈 可向上折算到 Lv.${parentLevel}，助力解锁`;
+    } else {
+      reason = `✨ 合成可获得 ${(level + 1) * MERGE_REWARD_COEFFICIENT} 金币`;
+    }
+
+    let orderPriority = 0;
+    for (const order of orders) {
+      for (const item of order.items) {
+        if (item.level === level + 1) {
+          orderPriority += 30;
+          if (reason) reason += " · ";
+          reason += "📋 可完成订单";
+        }
+      }
+    }
+    priorityScore += orderPriority;
+
+    suggestions.push({
+      level,
+      dessert,
+      reason,
+      priorityScore,
+      pairs,
+      sourceIndices: indices.slice(0, pairs * 2),
+    });
+  }
+
+  suggestions.sort((a, b) => b.priorityScore - a.priorityScore);
+
+  const orderShortfalls: OrderShortfall[] = orders.map(order => {
+    const missingItems: OrderShortfall["missingItems"] = [];
+    let canComplete = true;
+
+    for (const item of order.items) {
+      const have = levelCounts.get(item.level) || 0;
+      if (have < item.count) {
+        canComplete = false;
+        missingItems.push({
+          level: item.level,
+          count: item.count - have,
+          dessert: DESSERTS[item.level - 1],
+        });
+      }
+    }
+
+    return {
+      orderId: order.id,
+      canComplete,
+      missingItems,
+    };
+  }).filter(os => !os.canComplete || os.missingItems.length > 0);
+
+  return {
+    nextTargetLevel,
+    nextTargetDessert,
+    isAllUnlocked,
+    boardCounts,
+    effectiveCounts,
+    maxReachableLevel,
+    targetShortfall,
+    suggestions,
+    orderShortfalls,
+    totalLv1Value,
+    targetLv1Value,
+    shortfallLv1Value,
+  };
+}
