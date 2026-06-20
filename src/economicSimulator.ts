@@ -24,9 +24,13 @@ import {
   SimOrder,
   SimOrderItem,
   EventSimOrder,
+  LevelConfig,
+  getLevelConfig,
+  LEVEL_CONFIGS,
 } from "./gameConfig";
 
 export interface SimulationParams {
+  levelId: string;
   startLevel: number;
   targetLevel: number;
   startCoins: number;
@@ -82,6 +86,7 @@ export interface SimulationResult {
 }
 
 export const DEFAULT_PARAMS: SimulationParams = {
+  levelId: "classic",
   startLevel: 1,
   targetLevel: 10,
   startCoins: INITIAL_COINS,
@@ -133,6 +138,8 @@ function createRng(seed?: number): () => number {
 
 export function runSimulation(params: SimulationParams): SimulationResult {
   const rng = createRng(params.randomSeed);
+  const config = getLevelConfig(params.levelId);
+  const maxDessertLevel = config.desserts.length;
 
   if (params.targetLevel <= params.startLevel) {
     return {
@@ -159,8 +166,8 @@ export function runSimulation(params: SimulationParams): SimulationResult {
     };
   }
 
-  if (params.targetLevel > MAX_DESSERT_LEVEL) {
-    params.targetLevel = MAX_DESSERT_LEVEL;
+  if (params.targetLevel > maxDessertLevel) {
+    params.targetLevel = maxDessertLevel;
   }
 
   const levelProgress: LevelProgress[] = [];
@@ -195,9 +202,9 @@ export function runSimulation(params: SimulationParams): SimulationResult {
     const costInfo = getMergeCostToLevel(targetLvl, currentLevel);
     const unlockedLevels = Array.from({ length: currentLevel }, (_, i) => i + 1);
     let requiredSpawns = Math.ceil(costInfo.spawnsNeeded / Math.max(0.3, params.mergeEfficiency));
-    let spawnCostTotal = requiredSpawns * SPAWN_COST;
+    let spawnCostTotal = requiredSpawns * config.spawnCost;
     let additionalCoinsNeeded = Math.max(0, spawnCostTotal - coins);
-    const effectiveMergeReward = calculateMergeReward(targetLvl, false);
+    const effectiveMergeReward = calculateMergeReward(targetLvl, false, config);
     let additionalMerges = Math.ceil(costInfo.mergesNeeded / Math.max(0.3, params.mergeEfficiency));
 
     let lvlTime = 0;
@@ -208,7 +215,7 @@ export function runSimulation(params: SimulationParams): SimulationResult {
         Math.floor(params.spawnsPerMinute * simTickMinutes),
         Math.max(0, requiredSpawns)
       );
-      const spawnCostThisTick = spawnsThisTick * SPAWN_COST;
+      const spawnCostThisTick = spawnsThisTick * config.spawnCost;
 
       if (coins >= spawnCostThisTick) {
         coins -= spawnCostThisTick;
@@ -216,9 +223,9 @@ export function runSimulation(params: SimulationParams): SimulationResult {
         requiredSpawns -= spawnsThisTick;
         totalSpawns += spawnsThisTick;
       } else {
-        const affordableSpawns = Math.floor(coins / SPAWN_COST);
+        const affordableSpawns = Math.floor(coins / config.spawnCost);
         if (affordableSpawns > 0) {
-          const affordableCost = affordableSpawns * SPAWN_COST;
+          const affordableCost = affordableSpawns * config.spawnCost;
           coins -= affordableCost;
           totalSpawnCoinsSpent += affordableCost;
           requiredSpawns -= affordableSpawns;
@@ -232,7 +239,7 @@ export function runSimulation(params: SimulationParams): SimulationResult {
       );
       for (let m = 0; m < mergesThisTick; m++) {
         const mergeLevel = Math.min(currentLevel, randomInt(1, currentLevel, rng));
-        const reward = calculateMergeReward(mergeLevel + 1, false);
+        const reward = calculateMergeReward(mergeLevel + 1, false, config);
         coins += reward;
         totalMergeCoins += reward;
         additionalMerges--;
@@ -259,8 +266,8 @@ export function runSimulation(params: SimulationParams): SimulationResult {
         const dayMinutes = params.dailyPlayHours * 60;
         if (lvlTime % dayMinutes === 0 && params.offlineHoursPerDay > 0) {
           const offlineMinutes = params.offlineHoursPerDay * 60;
-          const offlineRate = calculateBaseEarningsRate(currentLevel) * params.offlineEarningRateMultiplier;
-          const cappedOffline = Math.min(offlineMinutes, MAX_OFFLINE_HOURS * 60);
+          const offlineRate = calculateBaseEarningsRate(currentLevel, config) * params.offlineEarningRateMultiplier;
+          const cappedOffline = Math.min(offlineMinutes, config.maxOfflineHours * 60);
           const offlineCoins = Math.floor(cappedOffline * offlineRate);
           coins += offlineCoins;
           totalOfflineCoins += offlineCoins;
@@ -279,7 +286,8 @@ export function runSimulation(params: SimulationParams): SimulationResult {
           const eventResult = simulateEvent(
             currentLevel,
             params.eventSkillLevel,
-            rng
+            rng,
+            config
           );
           const eventCoins = eventResult.coins + eventResult.shards * params.eventShardCoinValue;
           coins += eventCoins;
@@ -406,7 +414,8 @@ export function runSimulation(params: SimulationParams): SimulationResult {
 function simulateEvent(
   currentMaxLevel: number,
   skillLevel: number,
-  rng: () => number
+  rng: () => number,
+  config: LevelConfig
 ): { coins: number; shards: number } {
   let stepsLeft = EVENT_MAX_STEPS;
   let eventCoins = EVENT_INITIAL_COINS;
@@ -414,6 +423,7 @@ function simulateEvent(
   let ordersCompleted = 0;
   let maxLevel = Math.max(1, Math.floor(currentMaxLevel * skillLevel * 0.8));
   let shardsEarned = 0;
+  const maxDessertLevel = config.desserts.length;
 
   const orders = generateEventSimOrders();
 
@@ -429,7 +439,7 @@ function simulateEvent(
       const level = Math.min(maxLevel, Math.floor(randomRange(1, maxLevel + 1, rng)));
       const reward = calculateMergeReward(level + 1, true);
       eventCoins += reward;
-      if (level + 1 > maxLevel && level + 1 <= MAX_DESSERT_LEVEL) {
+      if (level + 1 > maxLevel && level + 1 <= maxDessertLevel) {
         maxLevel = level + 1;
       }
     } else if (stepsLeft > 0) {
@@ -448,11 +458,11 @@ function simulateEvent(
     }
   }
 
-  maxLevel = Math.min(maxLevel, MAX_DESSERT_LEVEL);
+  maxLevel = Math.min(maxLevel, maxDessertLevel);
   return calculateEventResult(merges, ordersCompleted, maxLevel, eventCoins, shardsEarned);
 }
 
-export function getEconomicSnapshot(level: number): {
+export function getEconomicSnapshot(level: number, config?: LevelConfig): {
   spawnCost: number;
   averageMergeReward: number;
   averageOrderReward: number;
@@ -464,28 +474,30 @@ export function getEconomicSnapshot(level: number): {
   } | null;
   efficiencyBreakEven: number;
 } {
+  const cfg = config || getLevelConfig("classic");
+  const maxDessertLevel = cfg.desserts.length;
   const unlockLevels = Array.from({ length: level }, (_, i) => i + 1);
   const sampleOrders = generateSimOrders(unlockLevels, 20);
   const avgOrderReward = sampleOrders.reduce((sum: number, o: SimOrder) => sum + o.reward, 0) / Math.max(1, sampleOrders.length);
 
   const avgMergeReward = level >= 2
-    ? Array.from({ length: level - 1 }, (_, i) => calculateMergeReward(i + 2, false))
+    ? Array.from({ length: level - 1 }, (_, i) => calculateMergeReward(i + 2, false, cfg))
         .reduce((a: number, b: number) => a + b, 0) / (level - 1)
-    : calculateMergeReward(2, false);
+    : calculateMergeReward(2, false, cfg);
 
-  const costToNext = level < MAX_DESSERT_LEVEL
-    ? getMergeCostToLevel(level + 1, level)
+  const costToNext = level < maxDessertLevel
+    ? getMergeCostToLevel(level + 1, level, cfg)
     : null;
 
   const spawnsPerMerge = 2;
-  const avgSpawnsCostPerMerge = spawnsPerMerge * SPAWN_COST;
+  const avgSpawnsCostPerMerge = spawnsPerMerge * cfg.spawnCost;
   const efficiencyBreakEven = avgSpawnsCostPerMerge / Math.max(1, avgMergeReward + avgOrderReward * 0.2);
 
   return {
-    spawnCost: SPAWN_COST,
+    spawnCost: cfg.spawnCost,
     averageMergeReward: Math.round(avgMergeReward),
     averageOrderReward: Math.round(avgOrderReward),
-    offlineHourlyRate: calculateBaseEarningsRate(level) * 60,
+    offlineHourlyRate: calculateBaseEarningsRate(level, cfg) * 60,
     costToNextLevel: costToNext ? {
       spawns: costToNext.spawnsNeeded,
       minCost: costToNext.minSpawnCost,

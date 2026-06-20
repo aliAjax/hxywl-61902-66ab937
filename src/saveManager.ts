@@ -1,10 +1,12 @@
-export const SAVE_VERSION = "1.1.0";
+export const SAVE_VERSION = "2.0.0";
 export const MIN_TIMELINE_SAVE_VERSION = "1.1.0";
 
 import type {
   TimelineRecord,
   SaveFileTimelineData,
 } from "./timelineManager";
+
+import { LEVEL_CONFIGS, LEVEL_ORDER, getLevelConfig } from "./gameConfig";
 
 export type {
   TimelineRecord,
@@ -37,6 +39,24 @@ export interface SaveFileGameData {
   timeline?: SaveFileTimelineData | null;
 }
 
+export interface LevelSaveData {
+  coins: number;
+  board: (number | null)[];
+  maxLevel: number;
+  unlockedLevels: number[];
+  unlockTimes: { [key: number]: string };
+  orders: SaveFileOrder[];
+  spawnCooldownEnd: number;
+  offlineLastLeaveTime: number;
+  offlineLastClaimTime: number;
+}
+
+export interface MultiLevelSaveData {
+  currentLevel: string;
+  levels: { [levelId: string]: LevelSaveData };
+  globalTimeline?: SaveFileTimelineData | null;
+}
+
 export interface SaveFileMeta {
   exportTime?: string;
   deviceInfo?: string;
@@ -48,6 +68,15 @@ export interface SaveFile {
   gameId: string;
   timestamp: number;
   data: SaveFileGameData;
+  multiLevelData?: MultiLevelSaveData;
+  meta?: SaveFileMeta;
+}
+
+export interface MultiLevelSaveFile {
+  version: string;
+  gameId: string;
+  timestamp: number;
+  data: MultiLevelSaveData;
   meta?: SaveFileMeta;
 }
 
@@ -65,7 +94,55 @@ export interface LoadResult {
 }
 
 const VALID_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const VALID_LEVELS_EXTENDED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+export function createEmptyLevelSave(levelId: string): LevelSaveData {
+  const config = getLevelConfig(levelId);
+  const board: (number | null)[] = Array(config.boardSize).fill(null);
+  for (let i = 0; i < config.initialSpawnCount; i++) {
+    board[i] = 1;
+  }
+  return {
+    coins: config.initialCoins,
+    board,
+    maxLevel: 1,
+    unlockedLevels: [1],
+    unlockTimes: { 1: new Date().toISOString() },
+    orders: [],
+    spawnCooldownEnd: 0,
+    offlineLastLeaveTime: 0,
+    offlineLastClaimTime: 0,
+  };
+}
+
+export function createInitialMultiLevelData(): MultiLevelSaveData {
+  const levels: { [levelId: string]: LevelSaveData } = {};
+  for (const levelId of LEVEL_ORDER) {
+    levels[levelId] = createEmptyLevelSave(levelId);
+  }
+  return {
+    currentLevel: "classic",
+    levels,
+  };
+}
+
+export function migrateLegacySaveToMultiLevel(legacyData: SaveFileGameData): MultiLevelSaveData {
+  const multiData = createInitialMultiLevelData();
+  multiData.levels.classic = {
+    coins: legacyData.coins,
+    board: legacyData.board,
+    maxLevel: legacyData.maxLevel,
+    unlockedLevels: legacyData.unlockedLevels,
+    unlockTimes: legacyData.unlockTimes,
+    orders: legacyData.orders,
+    spawnCooldownEnd: legacyData.spawnCooldownEnd ?? 0,
+    offlineLastLeaveTime: 0,
+    offlineLastClaimTime: 0,
+  };
+  multiData.globalTimeline = legacyData.timeline || null;
+  return multiData;
+}
 
 export function isValidVersionFormat(version: string): boolean {
   if (!version || typeof version !== "string") return false;
@@ -154,15 +231,16 @@ export function validateSaveFile(save: unknown): ValidateResult {
   if (!Array.isArray(data.board)) {
     errors.push("棋盘数据格式错误");
   } else {
-    if (data.board.length !== 25) {
-      errors.push(`棋盘大小错误: 应为25格，实际${data.board.length}格`);
+    if (data.board.length !== 25 && data.board.length !== 20) {
+      warnings.push(`棋盘大小为 ${data.board.length}，非标准值（期望20或25）`);
     }
+    const maxValidLevel = data.board.length <= 20 ? 8 : 10;
     for (let i = 0; i < data.board.length; i++) {
       const cell = data.board[i];
       if (cell !== null && cell !== undefined) {
         if (typeof cell !== "number" || !Number.isInteger(cell)) {
           errors.push(`棋盘第${i + 1}格数据类型错误`);
-        } else if (!VALID_LEVELS.includes(cell)) {
+        } else if (!VALID_LEVELS_EXTENDED.includes(cell)) {
           errors.push(`棋盘第${i + 1}格等级 ${cell} 超出有效范围`);
         }
       }
@@ -174,7 +252,7 @@ export function validateSaveFile(save: unknown): ValidateResult {
   } else if (!Number.isInteger(data.maxLevel)) {
     errors.push("最高等级应为整数");
   } else if (data.maxLevel < 1 || data.maxLevel > 10) {
-    errors.push(`最高等级 ${data.maxLevel} 超出有效范围`);
+    warnings.push(`最高等级 ${data.maxLevel} 超出传统范围(1-10)，可能是新关卡数据`);
   }
 
   if (!Array.isArray(data.unlockedLevels)) {
@@ -188,7 +266,7 @@ export function validateSaveFile(save: unknown): ValidateResult {
       const lv = data.unlockedLevels[i];
       if (typeof lv !== "number" || !Number.isInteger(lv)) {
         errors.push(`图鉴第${i + 1}项数据类型错误`);
-      } else if (!VALID_LEVELS.includes(lv)) {
+      } else if (!VALID_LEVELS_EXTENDED.includes(lv)) {
         errors.push(`图鉴等级 ${lv} 超出有效范围`);
       } else if (seen.has(lv)) {
         warnings.push(`图鉴存在重复等级: ${lv}`);
@@ -292,8 +370,8 @@ export function validateSaveFile(save: unknown): ValidateResult {
             errors.push(`${itemPrefix}缺少必填字段 level`);
           } else if (typeof item.level !== "number" || !Number.isInteger(item.level)) {
             errors.push(`${itemPrefix}的 level 必须为整数`);
-          } else if (!VALID_LEVELS.includes(item.level)) {
-            errors.push(`${itemPrefix}的 level (${item.level}) 超出有效范围 1-10`);
+          } else if (!VALID_LEVELS_EXTENDED.includes(item.level)) {
+            errors.push(`${itemPrefix}的 level (${item.level}) 超出有效范围 1-12`);
           }
 
           if (item.count === undefined) {
@@ -371,12 +449,13 @@ export function sanitizeSaveData(data: SaveFileGameData, fallbackData: SaveFileG
   }
 
   if (Array.isArray(data.board)) {
+    const boardSize = data.board.length || 25;
     const board: (number | null)[] = [];
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < boardSize; i++) {
       const cell = data.board[i];
       if (cell === null || cell === undefined) {
         board.push(null);
-      } else if (typeof cell === "number" && Number.isInteger(cell) && VALID_LEVELS.includes(cell)) {
+      } else if (typeof cell === "number" && Number.isInteger(cell) && VALID_LEVELS_EXTENDED.includes(cell)) {
         board.push(cell);
       } else {
         board.push(null);
@@ -386,13 +465,13 @@ export function sanitizeSaveData(data: SaveFileGameData, fallbackData: SaveFileG
   }
 
   if (typeof data.maxLevel === "number" && !isNaN(data.maxLevel) && Number.isInteger(data.maxLevel)) {
-    result.maxLevel = Math.max(1, Math.min(10, data.maxLevel));
+    result.maxLevel = Math.max(1, Math.min(12, data.maxLevel));
   }
 
   if (Array.isArray(data.unlockedLevels)) {
     const levels = new Set<number>();
     for (const lv of data.unlockedLevels) {
-      if (typeof lv === "number" && Number.isInteger(lv) && VALID_LEVELS.includes(lv)) {
+      if (typeof lv === "number" && Number.isInteger(lv) && VALID_LEVELS_EXTENDED.includes(lv)) {
         levels.add(lv);
       }
     }
@@ -425,7 +504,7 @@ export function sanitizeSaveData(data: SaveFileGameData, fallbackData: SaveFileG
         const items: SaveFileOrderItem[] = [];
         if (Array.isArray(order.items)) {
           for (const item of order.items) {
-            if (item && typeof item === "object" && typeof item.level === "number" && VALID_LEVELS.includes(item.level)) {
+            if (item && typeof item === "object" && typeof item.level === "number" && VALID_LEVELS_EXTENDED.includes(item.level)) {
               items.push({
                 level: item.level,
                 count: typeof item.count === "number" && item.count >= 1 ? Math.floor(item.count) : 1,

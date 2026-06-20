@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useCallback } from "react";
 import {
-  DESSERTS,
-  MAX_DESSERT_LEVEL,
-  INITIAL_COINS,
+  getLevelConfig,
+  LevelConfig,
+  LEVEL_ORDER,
 } from "./gameConfig";
 import {
   SimulationParams,
@@ -17,6 +17,7 @@ import {
 interface SimulationPanelProps {
   currentMaxLevel: number;
   currentCoins: number;
+  currentLevelId: string;
 }
 
 interface ParamSliderProps {
@@ -57,10 +58,14 @@ function ParamSlider({ label, description, value, min, max, step, unit, onChange
   );
 }
 
-export default function SimulationPanel({ currentMaxLevel, currentCoins }: SimulationPanelProps): React.ReactElement {
+export default function SimulationPanel({ currentMaxLevel, currentCoins, currentLevelId }: SimulationPanelProps): React.ReactElement {
+  const config = getLevelConfig(currentLevelId);
+  const desserts = config.desserts;
+  const maxDessertLevel = desserts.length;
   const [isOpen, setIsOpen] = useState(false);
   const [params, setParams] = useState<SimulationParams>(() => ({
     ...createDefaultParams(),
+    levelId: currentLevelId,
     startLevel: currentMaxLevel,
     startCoins: currentCoins,
   }));
@@ -97,10 +102,10 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
     setParams(prev => ({ ...prev, [key]: value }));
   }, []);
 
-  const snapshot = useMemo(() => getEconomicSnapshot(params.startLevel), [params.startLevel]);
+  const snapshot = useMemo(() => getEconomicSnapshot(params.startLevel, config), [params.startLevel, config]);
   const targetSnapshot = useMemo(() => {
     if (params.targetLevel > params.startLevel) {
-      return getEconomicSnapshot(params.targetLevel);
+      return getEconomicSnapshot(params.targetLevel, config);
     }
     return null;
   }, [params.startLevel, params.targetLevel]);
@@ -167,7 +172,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
               <div className="sim-status-badge">
                 <span className="sim-status-label">当前进度</span>
                 <span className="sim-status-value">
-                  Lv.{currentMaxLevel} {DESSERTS[currentMaxLevel - 1]?.emoji} · 💰{currentCoins}
+                  Lv.{currentMaxLevel} {desserts[currentMaxLevel - 1]?.emoji} · 💰{currentCoins}
                 </span>
               </div>
               <button
@@ -209,7 +214,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                       description="模拟开始时的最高甜品等级"
                       value={params.startLevel}
                       min={1}
-                      max={MAX_DESSERT_LEVEL - 1}
+                      max={maxDessertLevel - 1}
                       step={1}
                       onChange={(v) => updateParam("startLevel", Math.min(v, params.targetLevel - 1))}
                     />
@@ -218,7 +223,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                       description="想要解锁的最高甜品等级"
                       value={params.targetLevel}
                       min={Math.max(2, params.startLevel + 1)}
-                      max={MAX_DESSERT_LEVEL}
+                      max={maxDessertLevel}
                       step={1}
                       onChange={(v) => updateParam("targetLevel", Math.max(v, params.startLevel + 1))}
                     />
@@ -366,7 +371,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                         <h4 className="sim-section-title">各等级解锁进度</h4>
                         <div className="sim-level-progress-list">
                           {progressBars.map((p: LevelProgress & { widthPct: number }) => {
-                            const dessert = DESSERTS[p.level - 1];
+                            const dessert = desserts[p.level - 1];
                             return (
                               <div key={p.level} className="sim-level-item">
                                 <div className="sim-level-header">
@@ -498,7 +503,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                 <div className="sim-economy-scroll">
                   <div className="sim-economy-card">
                     <h4 className="sim-section-title">
-                      {DESSERTS[params.startLevel - 1]?.emoji} 起始等级 Lv.{params.startLevel} 经济数据
+                      {desserts[params.startLevel - 1]?.emoji} 起始等级 Lv.{params.startLevel} 经济数据
                     </h4>
                     <div className="sim-economy-grid">
                       <div className="sim-economy-item">
@@ -521,7 +526,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                     {snapshot.costToNextLevel ? (
                       <div className="sim-next-level-cost">
                         <p className="sim-next-title">
-                          升到 Lv.{params.startLevel + 1} {DESSERTS[params.startLevel]?.name} 理论最低消耗：
+                          升到 Lv.{params.startLevel + 1} {desserts[params.startLevel]?.name} 理论最低消耗：
                         </p>
                         <div className="sim-next-cost-grid">
                           <span>生成次数: <strong>{snapshot.costToNextLevel.spawns}</strong></span>
@@ -547,7 +552,7 @@ export default function SimulationPanel({ currentMaxLevel, currentCoins }: Simul
                   {targetSnapshot && (
                     <div className="sim-economy-card">
                       <h4 className="sim-section-title">
-                        {DESSERTS[params.targetLevel - 1]?.emoji} 目标等级 Lv.{params.targetLevel} 经济数据
+                        {desserts[params.targetLevel - 1]?.emoji} 目标等级 Lv.{params.targetLevel} 经济数据
                       </h4>
                       <div className="sim-economy-grid">
                         <div className="sim-economy-item">

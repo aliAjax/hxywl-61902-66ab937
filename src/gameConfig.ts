@@ -5,6 +5,133 @@ export interface Dessert {
   color: string;
 }
 
+export interface LevelConfig {
+  id: string;
+  name: string;
+  theme: string;
+  icon: string;
+  description: string;
+  desserts: Dessert[];
+  boardSize: number;
+  initialCoins: number;
+  initialSpawnCount: number;
+  spawnCost: number;
+  spawnCooldownSeconds: number;
+  spawnMinLevel: number;
+  spawnMaxLevel: number;
+  maxOrders: number;
+  minOrderItems: number;
+  maxOrderItems: number;
+  maxOfflineHours: number;
+  baseEarningsPerMinute: number;
+  offlineEarningsMultiplier: number;
+  mergeRewardCoefficient: number;
+  orderRewardCoefficient: number;
+}
+
+export const LEVEL_CONFIGS: { [levelId: string]: LevelConfig } = {
+  classic: {
+    id: "classic",
+    name: "甜品合成店",
+    theme: "dessert",
+    icon: "🍰",
+    description: "经典模式，合成甜品解锁图鉴",
+    desserts: [
+      { emoji: "🍬", name: "糖果", level: 1, color: "#f9a8d4" },
+      { emoji: "🍪", name: "曲奇", level: 2, color: "#fbbf24" },
+      { emoji: "🍩", name: "甜甜圈", level: 3, color: "#fb923c" },
+      { emoji: "🧁", name: "纸杯蛋糕", level: 4, color: "#f472b6" },
+      { emoji: "🍰", name: "蛋糕", level: 5, color: "#ec4899" },
+      { emoji: "🍮", name: "布丁", level: 6, color: "#a855f7" },
+      { emoji: "🎂", name: "生日蛋糕", level: 7, color: "#8b5cf6" },
+      { emoji: "🍨", name: "冰淇淋", level: 8, color: "#06b6d4" },
+      { emoji: "🥧", name: "派", level: 9, color: "#10b981" },
+      { emoji: "🍫", name: "巧克力", level: 10, color: "#78350f" },
+    ],
+    boardSize: 25,
+    initialCoins: 50,
+    initialSpawnCount: 6,
+    spawnCost: 10,
+    spawnCooldownSeconds: 5,
+    spawnMinLevel: 1,
+    spawnMaxLevel: 3,
+    maxOrders: 3,
+    minOrderItems: 1,
+    maxOrderItems: 3,
+    maxOfflineHours: 8,
+    baseEarningsPerMinute: 2,
+    offlineEarningsMultiplier: 1.0,
+    mergeRewardCoefficient: 10,
+    orderRewardCoefficient: 15,
+  },
+  beverage: {
+    id: "beverage",
+    name: "饮品吧",
+    theme: "beverage",
+    icon: "🍹",
+    description: "清凉饮品主题，更快节奏更高收益",
+    desserts: [
+      { emoji: "🧊", name: "冰块", level: 1, color: "#bae6fd" },
+      { emoji: "🥛", name: "牛奶", level: 2, color: "#fef9c3" },
+      { emoji: "🍵", name: "抹茶", level: 3, color: "#86efac" },
+      { emoji: "☕", name: "咖啡", level: 4, color: "#d6a67a" },
+      { emoji: "🧋", name: "珍珠奶茶", level: 5, color: "#a78bfa" },
+      { emoji: "🥤", name: "冰沙", level: 6, color: "#5eead4" },
+      { emoji: "🍹", name: "鸡尾酒", level: 7, color: "#fb923c" },
+      { emoji: "🍾", name: "香槟", level: 8, color: "#fbbf24" },
+    ],
+    boardSize: 20,
+    initialCoins: 80,
+    initialSpawnCount: 5,
+    spawnCost: 8,
+    spawnCooldownSeconds: 4,
+    spawnMinLevel: 1,
+    spawnMaxLevel: 3,
+    maxOrders: 3,
+    minOrderItems: 1,
+    maxOrderItems: 3,
+    maxOfflineHours: 8,
+    baseEarningsPerMinute: 3,
+    offlineEarningsMultiplier: 1.5,
+    mergeRewardCoefficient: 12,
+    orderRewardCoefficient: 20,
+  },
+};
+
+export const LEVEL_ORDER: string[] = ["classic", "beverage"];
+
+export function getLevelConfig(levelId: string): LevelConfig {
+  return LEVEL_CONFIGS[levelId] || LEVEL_CONFIGS.classic;
+}
+
+export const DESSERTS: Dessert[] = LEVEL_CONFIGS.classic.desserts;
+export const MAX_DESSERT_LEVEL = DESSERTS.length;
+
+export const GAME_ID = "hxywl-61902";
+export const STORAGE_KEY = GAME_ID + "-save";
+export const OFFLINE_DATA_KEY = GAME_ID + "-offline";
+export const LEVEL_SAVE_KEY = GAME_ID + "-level-saves";
+
+export const BOARD_SIZE = 25;
+export const INITIAL_COINS = 50;
+export const INITIAL_SPAWN_COUNT = 6;
+export const SPAWN_COST = 10;
+export const SPAWN_COOLDOWN_SECONDS = 5;
+export const SPAWN_MIN_LEVEL = 1;
+export const SPAWN_MAX_LEVEL = 3;
+
+export const MAX_ORDERS = 3;
+export const MIN_ORDER_ITEMS = 1;
+export const MAX_ORDER_ITEMS = 3;
+
+export const MAX_OFFLINE_HOURS = 8;
+export const BASE_EARNINGS_PER_MINUTE = 2;
+
+export const MERGE_REWARD_COEFFICIENT = 10;
+export const ORDER_REWARD_COEFFICIENT = 15;
+
+export const CURRENT_LEVEL_KEY = GAME_ID + "-current-level";
+
 export interface SimOrderItem {
   level: number;
   count: number;
@@ -66,43 +193,6 @@ export interface EventReplayData {
   totalStepsUsed: number;
 }
 
-export const DESSERTS: Dessert[] = [
-  { emoji: "🍬", name: "糖果", level: 1, color: "#f9a8d4" },
-  { emoji: "🍪", name: "曲奇", level: 2, color: "#fbbf24" },
-  { emoji: "🍩", name: "甜甜圈", level: 3, color: "#fb923c" },
-  { emoji: "🧁", name: "纸杯蛋糕", level: 4, color: "#f472b6" },
-  { emoji: "🍰", name: "蛋糕", level: 5, color: "#ec4899" },
-  { emoji: "🍮", name: "布丁", level: 6, color: "#a855f7" },
-  { emoji: "🎂", name: "生日蛋糕", level: 7, color: "#8b5cf6" },
-  { emoji: "🍨", name: "冰淇淋", level: 8, color: "#06b6d4" },
-  { emoji: "🥧", name: "派", level: 9, color: "#10b981" },
-  { emoji: "🍫", name: "巧克力", level: 10, color: "#78350f" },
-];
-
-export const MAX_DESSERT_LEVEL = DESSERTS.length;
-
-export const GAME_ID = "hxywl-61902";
-export const STORAGE_KEY = GAME_ID + "-save";
-export const OFFLINE_DATA_KEY = GAME_ID + "-offline";
-
-export const BOARD_SIZE = 25;
-export const INITIAL_COINS = 50;
-export const INITIAL_SPAWN_COUNT = 6;
-export const SPAWN_COST = 10;
-export const SPAWN_COOLDOWN_SECONDS = 5;
-export const SPAWN_MIN_LEVEL = 1;
-export const SPAWN_MAX_LEVEL = 3;
-
-export const MAX_ORDERS = 3;
-export const MIN_ORDER_ITEMS = 1;
-export const MAX_ORDER_ITEMS = 3;
-
-export const MAX_OFFLINE_HOURS = 8;
-export const BASE_EARNINGS_PER_MINUTE = 2;
-
-export const MERGE_REWARD_COEFFICIENT = 10;
-export const ORDER_REWARD_COEFFICIENT = 15;
-
 export const EVENT_MAX_STEPS = 25;
 export const EVENT_INITIAL_COINS = 200;
 export const EVENT_ORDER_COUNT = 3;
@@ -117,27 +207,31 @@ export const EVENT_MERGE_BONUS = 5;
 export const EVENT_ORDER_BONUS = 50;
 export const EVENT_LEVEL_BONUS_COEFFICIENT = 30;
 
-export function calculateMergeReward(level: number, isEvent: boolean = false): number {
-  const coefficient = isEvent ? EVENT_MERGE_REWARD_COEFFICIENT : MERGE_REWARD_COEFFICIENT;
+export function calculateMergeReward(level: number, isEvent: boolean = false, config?: LevelConfig): number {
+  const coefficient = isEvent ? EVENT_MERGE_REWARD_COEFFICIENT : (config?.mergeRewardCoefficient || MERGE_REWARD_COEFFICIENT);
   return level * coefficient;
 }
 
-export function calculateBaseEarningsRate(maxLevel: number): number {
-  return BASE_EARNINGS_PER_MINUTE * maxLevel;
+export function calculateBaseEarningsRate(maxLevel: number, config?: LevelConfig): number {
+  const baseRate = config?.baseEarningsPerMinute || BASE_EARNINGS_PER_MINUTE;
+  const multiplier = config?.offlineEarningsMultiplier || 1.0;
+  return baseRate * maxLevel * multiplier;
 }
 
-export function calculateOfflineEarnings(maxLevel: number, offlineMinutes: number): number {
-  const rate = calculateBaseEarningsRate(maxLevel);
-  const cappedMinutes = Math.min(offlineMinutes, MAX_OFFLINE_HOURS * 60);
+export function calculateOfflineEarnings(maxLevel: number, offlineMinutes: number, config?: LevelConfig): number {
+  const rate = calculateBaseEarningsRate(maxLevel, config);
+  const maxHours = config?.maxOfflineHours || MAX_OFFLINE_HOURS;
+  const cappedMinutes = Math.min(offlineMinutes, maxHours * 60);
   return Math.floor(cappedMinutes * rate);
 }
 
-export function calculateOrderItemReward(level: number, count: number): number {
-  return level * count * ORDER_REWARD_COEFFICIENT;
+export function calculateOrderItemReward(level: number, count: number, config?: LevelConfig): number {
+  const coefficient = config?.orderRewardCoefficient || ORDER_REWARD_COEFFICIENT;
+  return level * count * coefficient;
 }
 
-export function calculateOrderReward(items: SimOrderItem[]): number {
-  return items.reduce((sum, item) => sum + calculateOrderItemReward(item.level, item.count), 0);
+export function calculateOrderReward(items: SimOrderItem[], config?: LevelConfig): number {
+  return items.reduce((sum, item) => sum + calculateOrderItemReward(item.level, item.count, config), 0);
 }
 
 export function calculateEventOrderReward(items: SimOrderItem[]): { coins: number; shards: number } {
@@ -154,7 +248,7 @@ export function getDessertsUpToLevel(maxLevel: number): Dessert[] {
   return DESSERTS.filter(d => d.level <= maxLevel);
 }
 
-export function getMergeCostToLevel(targetLevel: number, currentLevel: number = 1): { spawnsNeeded: number; mergesNeeded: number; minSpawnCost: number } {
+export function getMergeCostToLevel(targetLevel: number, currentLevel: number = 1, config?: LevelConfig): { spawnsNeeded: number; mergesNeeded: number; minSpawnCost: number } {
   if (targetLevel <= currentLevel) {
     return { spawnsNeeded: 0, mergesNeeded: 0, minSpawnCost: 0 };
   }
@@ -162,10 +256,11 @@ export function getMergeCostToLevel(targetLevel: number, currentLevel: number = 
   const dessertsNeededAtCurrent = Math.pow(2, levelsToMerge);
   const mergesNeeded = dessertsNeededAtCurrent - 1;
   const spawnsNeeded = dessertsNeededAtCurrent;
+  const cost = config?.spawnCost || SPAWN_COST;
   return {
     spawnsNeeded,
     mergesNeeded,
-    minSpawnCost: spawnsNeeded * SPAWN_COST
+    minSpawnCost: spawnsNeeded * cost
   };
 }
 
@@ -372,20 +467,23 @@ export interface SynthesisPlan {
 export function calculateSynthesisPlan(
   board: (number | null)[],
   unlockedLevels: number[],
-  orders: { id: number; items: { level: number; count: number }[] }[]
+  orders: { id: number; items: { level: number; count: number }[] }[],
+  config?: LevelConfig
 ): SynthesisPlan {
+  const desserts = config?.desserts || DESSERTS;
+  const mergeCoefficient = config?.mergeRewardCoefficient || MERGE_REWARD_COEFFICIENT;
   const maxUnlocked = Math.max(...unlockedLevels, 0);
   const nextLevel = maxUnlocked + 1;
-  const isAllUnlocked = maxUnlocked >= DESSERTS.length;
+  const isAllUnlocked = maxUnlocked >= desserts.length;
   const nextTargetLevel = isAllUnlocked ? null : nextLevel;
-  const nextTargetDessert = isAllUnlocked ? null : DESSERTS[nextLevel - 1];
+  const nextTargetDessert = isAllUnlocked ? null : desserts[nextLevel - 1];
   const parentLevel = maxUnlocked;
 
   const levelCounts = new Map<number, number>();
   const levelIndices = new Map<number, number[]>();
   for (let i = 0; i < board.length; i++) {
     const cell = board[i];
-    if (cell !== null && cell >= 1 && cell <= DESSERTS.length) {
+    if (cell !== null && cell >= 1 && cell <= desserts.length) {
       levelCounts.set(cell, (levelCounts.get(cell) || 0) + 1);
       if (!levelIndices.has(cell)) {
         levelIndices.set(cell, []);
@@ -395,20 +493,20 @@ export function calculateSynthesisPlan(
   }
 
   const boardCounts: LevelCount[] = [];
-  for (let lv = 1; lv <= DESSERTS.length; lv++) {
+  for (let lv = 1; lv <= desserts.length; lv++) {
     const count = levelCounts.get(lv) || 0;
     if (count > 0 || lv <= maxUnlocked) {
       boardCounts.push({
         level: lv,
         count,
-        dessert: DESSERTS[lv - 1],
+        dessert: desserts[lv - 1],
       });
     }
   }
 
   const effectiveCounts: EffectiveLevelCount[] = [];
   let carryFromBelow = 0;
-  for (let lv = 1; lv <= DESSERTS.length; lv++) {
+  for (let lv = 1; lv <= desserts.length; lv++) {
     const raw = levelCounts.get(lv) || 0;
     const totalAtLevel = raw + carryFromBelow;
     const carried = Math.floor(totalAtLevel / 2);
@@ -417,7 +515,7 @@ export function calculateSynthesisPlan(
     effectiveCounts.push({
       level: lv,
       count: raw,
-      dessert: DESSERTS[lv - 1],
+      dessert: desserts[lv - 1],
       carriedUp: carried,
       effectiveCount: leftover,
     });
@@ -429,8 +527,8 @@ export function calculateSynthesisPlan(
   for (let i = effectiveCounts.length - 1; i >= 0; i--) {
     if (effectiveCounts[i].effectiveCount > 0 || effectiveCounts[i].carriedUp > 0) {
       maxReachableLevel = effectiveCounts[i].level + (effectiveCounts[i].carriedUp > 0 ? 1 : 0);
-      if (maxReachableLevel > DESSERTS.length) {
-        maxReachableLevel = DESSERTS.length;
+      if (maxReachableLevel > desserts.length) {
+        maxReachableLevel = desserts.length;
       }
       break;
     }
@@ -454,7 +552,7 @@ export function calculateSynthesisPlan(
           needed,
           have,
           shortfall,
-          dessert: DESSERTS[lv - 1],
+          dessert: desserts[lv - 1],
         });
       }
     }
@@ -477,7 +575,7 @@ export function calculateSynthesisPlan(
     .sort((a, b) => b - a);
 
   for (const level of mergeableLevels) {
-    const dessert = DESSERTS[level - 1];
+    const dessert = desserts[level - 1];
     const count = levelCounts.get(level) || 0;
     const pairs = Math.floor(count / 2);
     const indices = levelIndices.get(level) || [];
@@ -493,7 +591,7 @@ export function calculateSynthesisPlan(
       priorityScore += Math.max(0, 50 - distance * 10);
       reason = `📈 可向上折算到 Lv.${parentLevel}，助力解锁`;
     } else {
-      reason = `✨ 合成可获得 ${(level + 1) * MERGE_REWARD_COEFFICIENT} 金币`;
+      reason = `✨ 合成可获得 ${(level + 1) * mergeCoefficient} 金币`;
     }
 
     let orderPriority = 0;
@@ -531,7 +629,7 @@ export function calculateSynthesisPlan(
         missingItems.push({
           level: item.level,
           count: item.count - have,
-          dessert: DESSERTS[item.level - 1],
+          dessert: desserts[item.level - 1],
         });
       }
     }

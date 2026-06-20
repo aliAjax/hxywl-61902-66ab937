@@ -14,6 +14,11 @@ import {
   readFileAsText,
   hasTimelineSupport,
   SaveFileTimelineData,
+  LevelSaveData,
+  MultiLevelSaveData,
+  createEmptyLevelSave,
+  createInitialMultiLevelData,
+  migrateLegacySaveToMultiLevel,
 } from "./saveManager";
 import {
   loadTimeline,
@@ -38,10 +43,17 @@ import {
   MAX_TIMELINE_RECORDS,
   MAX_REPLAY_HISTORY_DAYS,
   TIMELINE_VERSION,
+  setTimelineLevelId,
 } from "./timelineManager";
 import {
   DESSERTS,
   Dessert,
+  LevelConfig,
+  LEVEL_CONFIGS,
+  LEVEL_ORDER,
+  getLevelConfig,
+  CURRENT_LEVEL_KEY,
+  LEVEL_SAVE_KEY,
   BOARD_SIZE,
   STORAGE_KEY,
   OFFLINE_DATA_KEY,
@@ -253,11 +265,79 @@ interface FeedbackState {
   timestamp: number;
 }
 
-function findNextMergeHint(currentBoard: (number | null)[]): { sourceIndex: number; targetIndex: number; level: number } | null {
+function loadCurrentLevelId(): string {
+  try {
+    const saved = localStorage.getItem(CURRENT_LEVEL_KEY);
+    if (saved && LEVEL_CONFIGS[saved]) return saved;
+  } catch (e) {}
+  return "classic";
+}
+
+function saveCurrentLevelId(levelId: string): void {
+  try {
+    localStorage.setItem(CURRENT_LEVEL_KEY, levelId);
+  } catch (e) {}
+}
+
+function loadMultiLevelSaves(): MultiLevelSaveData {
+  try {
+    const saved = localStorage.getItem(LEVEL_SAVE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && parsed.levels && typeof parsed.currentLevel === "string") {
+        for (const levelId of LEVEL_ORDER) {
+          if (!parsed.levels[levelId]) {
+            parsed.levels[levelId] = createEmptyLevelSave(levelId);
+          }
+        }
+        return parsed as MultiLevelSaveData;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to load multi-level saves:", e);
+  }
+  try {
+    const legacySaved = localStorage.getItem(STORAGE_KEY);
+    if (legacySaved) {
+      const parsed = JSON.parse(legacySaved);
+      let gameData: SaveFileGameData;
+      if (parsed.data && typeof parsed.data === "object") {
+        gameData = parsed.data as SaveFileGameData;
+      } else {
+        gameData = {
+          board: parsed.board || Array(BOARD_SIZE).fill(null),
+          coins: typeof parsed.coins === "number" ? parsed.coins : INITIAL_COINS,
+          maxLevel: parsed.maxLevel || 1,
+          unlockedLevels: parsed.unlockedLevels || [1],
+          unlockTimes: parsed.unlockTimes || { 1: new Date().toISOString() },
+          orders: parsed.orders || [],
+          spawnCooldownEnd: parsed.spawnCooldownEnd || 0,
+        };
+      }
+      const multiData = migrateLegacySaveToMultiLevel(gameData);
+      saveMultiLevelSaves(multiData);
+      return multiData;
+    }
+  } catch (e) {
+    console.error("Failed to migrate legacy save:", e);
+  }
+  return createInitialMultiLevelData();
+}
+
+function saveMultiLevelSaves(data: MultiLevelSaveData): void {
+  try {
+    localStorage.setItem(LEVEL_SAVE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error("Failed to save multi-level data:", e);
+  }
+}
+
+function findNextMergeHint(currentBoard: (number | null)[], config?: LevelConfig): { sourceIndex: number; targetIndex: number; level: number } | null {
+  const desserts = config?.desserts || DESSERTS;
   const levelIndices = new Map<number, number[]>();
   for (let i = 0; i < currentBoard.length; i++) {
     const cell = currentBoard[i];
-    if (cell !== null && cell < DESSERTS.length) {
+    if (cell !== null && cell < desserts.length) {
       if (!levelIndices.has(cell)) {
         levelIndices.set(cell, []);
       }
@@ -281,18 +361,20 @@ function findNextMergeHint(currentBoard: (number | null)[]): { sourceIndex: numb
   };
 }
 
-function createInitialBoard(): (number | null)[] {
-  const initialBoard = Array(BOARD_SIZE).fill(null);
-  for (let i = 0; i < INITIAL_SPAWN_COUNT; i++) {
+function createInitialBoard(config?: LevelConfig): (number | null)[] {
+  const c = config || LEVEL_CONFIGS.classic;
+  const initialBoard = Array(c.boardSize).fill(null);
+  for (let i = 0; i < c.initialSpawnCount; i++) {
     initialBoard[i] = 1;
   }
   return initialBoard;
 }
 
-function createFallbackGameData(): SaveFileGameData {
+function createFallbackGameData(config?: LevelConfig): SaveFileGameData {
+  const c = config || LEVEL_CONFIGS.classic;
   return {
-    board: createInitialBoard(),
-    coins: INITIAL_COINS,
+    board: createInitialBoard(c),
+    coins: c.initialCoins,
     maxLevel: 1,
     unlockedLevels: [1],
     unlockTimes: { 1: new Date().toISOString() },
@@ -301,8 +383,41 @@ function createFallbackGameData(): SaveFileGameData {
   };
 }
 
-function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number; timelineData: SaveFileTimelineData | null } {
-  const fallback = createFallbackGameData();
+function loadGameState(levelId: string): { state: GameState; orders: Order[]; loadedFromSave: boolean; spawnCooldownEnd: number; timelineData: SaveFileTimelineData | null } {
+  const config = getLevelConfig(levelId);
+  const fallback = createFallbackGameData(config);
+  const multiData = loadMultiLevelSaves();
+  const levelSave = multiData.levels[levelId];
+  if (levelSave) {
+    const boardSize = config.boardSize;
+    let loadedBoard = levelSave.board;
+    if (loadedBoard.length !== boardSize) {
+      const newBoard: (number | null)[] = Array(boardSize).fill(null);
+      for (let i = 0; i < Math.min(loadedBoard.length, boardSize); i++) {
+        newBoard[i] = loadedBoard[i];
+      }
+      loadedBoard = newBoard;
+    }
+    const hasExistingBoard = loadedBoard.some((cell) => cell !== null);
+    const loadedCoins = levelSave.coins;
+    const isNewGame = !hasExistingBoard && loadedCoins <= 0;
+    const finalOrders = levelSave.orders && levelSave.orders.length > 0
+      ? (levelSave.orders as Order[])
+      : generateOrders(levelSave.unlockedLevels, config);
+    return {
+      state: {
+        board: isNewGame ? createInitialBoard(config) : loadedBoard,
+        coins: isNewGame ? config.initialCoins : Math.max(loadedCoins, 0),
+        maxLevel: levelSave.maxLevel,
+        unlockedLevels: levelSave.unlockedLevels,
+        unlockTimes: levelSave.unlockTimes,
+      },
+      orders: finalOrders,
+      loadedFromSave: true,
+      spawnCooldownEnd: levelSave.spawnCooldownEnd ?? 0,
+      timelineData: multiData.globalTimeline || null,
+    };
+  }
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -313,7 +428,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
         gameData = parsed.data as SaveFileGameData;
       } else {
         gameData = {
-          board: parsed.board || Array(BOARD_SIZE).fill(null),
+          board: parsed.board || Array(config.boardSize).fill(null),
           coins: typeof parsed.coins === "number" ? parsed.coins : -1,
           maxLevel: parsed.maxLevel || 1,
           unlockedLevels: parsed.unlockedLevels || [1],
@@ -339,12 +454,12 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
 
         const finalOrders = sanitized.orders && sanitized.orders.length > 0
           ? (sanitized.orders as Order[])
-          : generateOrders(sanitized.unlockedLevels);
+          : generateOrders(sanitized.unlockedLevels, config);
 
         return {
           state: {
-            board: isNewGame ? createInitialBoard() : loadedBoard,
-            coins: isNewGame ? INITIAL_COINS : Math.max(loadedCoins, 0),
+            board: isNewGame ? createInitialBoard(config) : loadedBoard,
+            coins: isNewGame ? config.initialCoins : Math.max(loadedCoins, 0),
             maxLevel: sanitized.maxLevel,
             unlockedLevels: sanitized.unlockedLevels,
             unlockTimes: sanitized.unlockTimes,
@@ -368,7 +483,7 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
             },
             orders: (sanitized.orders as Order[]) && sanitized.orders.length > 0
               ? (sanitized.orders as Order[])
-              : generateOrders(sanitized.unlockedLevels),
+              : generateOrders(sanitized.unlockedLevels, config),
             loadedFromSave: true,
             spawnCooldownEnd: sanitized.spawnCooldownEnd ?? 0,
             timelineData: sanitized.timeline || null,
@@ -383,20 +498,20 @@ function loadGameState(): { state: GameState; orders: Order[]; loadedFromSave: b
   }
   return {
     state: {
-      board: createInitialBoard(),
-      coins: INITIAL_COINS,
+      board: createInitialBoard(config),
+      coins: config.initialCoins,
       maxLevel: 1,
       unlockedLevels: [1],
       unlockTimes: { 1: new Date().toISOString() },
     },
-    orders: generateOrders([1]),
+    orders: generateOrders([1], config),
     loadedFromSave: false,
     spawnCooldownEnd: 0,
     timelineData: null,
   };
 }
 
-function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: number): void {
+function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: number, levelId: string = "classic"): void {
   try {
     const timelineData = getSaveFileTimelineData();
     const gameData: SaveFileGameData = {
@@ -416,6 +531,28 @@ function saveGameState(state: GameState, orders: Order[], spawnCooldownEnd: numb
     };
     const saveFile = createSaveFile(gameData, false);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(saveFile));
+
+    const multiData = loadMultiLevelSaves();
+    const config = getLevelConfig(levelId);
+    multiData.currentLevel = levelId;
+    multiData.levels[levelId] = {
+      coins: state.coins,
+      board: state.board,
+      maxLevel: state.maxLevel,
+      unlockedLevels: state.unlockedLevels,
+      unlockTimes: state.unlockTimes,
+      orders: orders.map(o => ({
+        id: o.id,
+        reward: o.reward,
+        completed: o.completed,
+        items: o.items.map(it => ({ ...it })),
+      })),
+      spawnCooldownEnd: spawnCooldownEnd || 0,
+      offlineLastLeaveTime: multiData.levels[levelId]?.offlineLastLeaveTime || 0,
+      offlineLastClaimTime: multiData.levels[levelId]?.offlineLastClaimTime || 0,
+    };
+    multiData.globalTimeline = timelineData || null;
+    saveMultiLevelSaves(multiData);
   } catch (e) {
     console.error("保存存档失败:", e);
   }
@@ -449,12 +586,12 @@ function hasUnclaimedReward(): boolean {
   return offlineData.lastClaimTime < offlineData.lastLeaveTime;
 }
 
-function calculateOfflineReward(): OfflineReward {
+function calculateOfflineReward(config: LevelConfig): OfflineReward {
   const offlineData = loadOfflineData();
   const now = Date.now();
   const maxOfflineMinutes = MAX_OFFLINE_HOURS * 60;
   const fallbackMaxLevel = offlineData?.maxLevelAtLeave || 1;
-  const fallbackRate = calculateBaseEarningsRate(fallbackMaxLevel);
+  const fallbackRate = calculateBaseEarningsRate(fallbackMaxLevel, config);
 
   if (!offlineData || offlineData.lastLeaveTime === 0) {
     return {
@@ -525,13 +662,13 @@ function calculateOfflineReward(): OfflineReward {
   };
 }
 
-function recordLeaveTime(maxLevel: number): void {
+function recordLeaveTime(maxLevel: number, config: LevelConfig): void {
   const existing = loadOfflineData();
   const offlineData: OfflineData = {
     lastLeaveTime: Date.now(),
     lastClaimTime: existing?.lastClaimTime || 0,
     maxLevelAtLeave: maxLevel,
-    baseEarningsRate: calculateBaseEarningsRate(maxLevel),
+    baseEarningsRate: calculateBaseEarningsRate(maxLevel, config),
   };
   saveOfflineData(offlineData);
 }
@@ -590,9 +727,10 @@ function isTutorialCompleted(): boolean {
   return false;
 }
 
-function generateOrder(unlockedLevels: number[]): Order {
-  const actualMaxItems = Math.min(MAX_ORDER_ITEMS, unlockedLevels.length);
-  const actualMinItems = Math.min(MIN_ORDER_ITEMS, actualMaxItems);
+function generateOrder(unlockedLevels: number[], config?: LevelConfig): Order {
+  const c = config || LEVEL_CONFIGS.classic;
+  const actualMaxItems = Math.min(c.maxOrderItems, unlockedLevels.length);
+  const actualMinItems = Math.min(c.minOrderItems, actualMaxItems);
   const numItems = Math.floor(Math.random() * (actualMaxItems - actualMinItems + 1)) + actualMinItems;
   const items: OrderItem[] = [];
   let totalReward = 0;
@@ -606,7 +744,7 @@ function generateOrder(unlockedLevels: number[]): Order {
 
   for (const [level, count] of levelCounts) {
     items.push({ level, count, collected: 0 });
-    totalReward += calculateOrderItemReward(level, count);
+    totalReward += calculateOrderItemReward(level, count, c);
   }
 
   return {
@@ -617,11 +755,12 @@ function generateOrder(unlockedLevels: number[]): Order {
   };
 }
 
-function generateOrders(unlockedLevels: number[], count: number = MAX_ORDERS): Order[] {
+function generateOrders(unlockedLevels: number[], config?: LevelConfig): Order[] {
+  const c = config || LEVEL_CONFIGS.classic;
   if (unlockedLevels.length === 0) return [];
   const orders: Order[] = [];
-  for (let i = 0; i < count; i++) {
-    orders.push(generateOrder(unlockedLevels));
+  for (let i = 0; i < c.maxOrders; i++) {
+    orders.push(generateOrder(unlockedLevels, c));
   }
   return orders;
 }
@@ -750,13 +889,15 @@ interface UnlockHint {
   parentEffectiveCount: number;
 }
 
-function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (number | null)[]): UnlockHint | null {
+function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (number | null)[], config?: LevelConfig): UnlockHint | null {
+  const c = config || LEVEL_CONFIGS.classic;
+  const desserts = c.desserts;
   const maxUnlocked = Math.max(...currentUnlockedLevels);
   const nextLevel = maxUnlocked + 1;
-  if (nextLevel > DESSERTS.length) return null;
-  const parentDessert = DESSERTS[maxUnlocked - 1];
-  const nextDessert = DESSERTS[nextLevel - 1];
-  const cost = getMergeCostToLevel(nextLevel, maxUnlocked);
+  if (nextLevel > desserts.length) return null;
+  const parentDessert = desserts[maxUnlocked - 1];
+  const nextDessert = desserts[nextLevel - 1];
+  const cost = getMergeCostToLevel(nextLevel, maxUnlocked, c);
   const parentLevel = maxUnlocked;
 
   const levelCounts = new Map<number, number>();
@@ -799,7 +940,7 @@ function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (numbe
 
   const boardProgress: UnlockHintBoardRow[] = [];
   for (let lv = parentLevel; lv >= 1; lv--) {
-    const d = DESSERTS[lv - 1];
+    const d = desserts[lv - 1];
     const onBoard = levelCounts.get(lv) || 0;
     const needed = lv === parentLevel ? 2 : 0;
     const effective = effectiveCounts.get(lv) || 0;
@@ -825,7 +966,7 @@ function getNextUnlockHint(currentUnlockedLevels: number[], currentBoard: (numbe
     minCost: cost.minSpawnCost,
     boardProgress,
     totalShortfallSpawns: shortfallLv1Value,
-    totalShortfallCost: shortfallLv1Value * SPAWN_COST,
+    totalShortfallCost: shortfallLv1Value * c.spawnCost,
     canMergeOnBoard: parentEffective >= 2,
     parentEffectiveCount: parentEffective,
   };
@@ -976,13 +1117,18 @@ function calculateEventResult(
 type SpawnStatus = "ready" | "cooldown" | "no_coins" | "board_full";
 
 function App(): React.ReactElement {
-  const initialLoaded = loadGameState();
+  const [currentLevelId, setCurrentLevelId] = useState<string>(loadCurrentLevelId);
+  const currentConfig = getLevelConfig(currentLevelId);
+  const currentDesserts = currentConfig.desserts;
+
+  const initialLoaded = loadGameState(currentLevelId);
   const initialState = initialLoaded.state;
 
   useEffect(() => {
     loadTimelineFromSaveData(initialLoaded.timelineData);
     setTimelineRecords(getTimelineRecords());
     setTimelineSummary(getTimelineSummary());
+    setTimelineLevelId(currentLevelId);
   }, []);
 
   const [board, setBoard] = useState<(number | null)[]>(initialState.board);
@@ -1099,6 +1245,48 @@ function App(): React.ReactElement {
   const [timelineSummary, setTimelineSummary] = useState<TimelineSummary | null>(null);
   const [timelineRefreshTrigger, setTimelineRefreshTrigger] = useState<number>(0);
 
+  const [showLevelSelector, setShowLevelSelector] = useState<boolean>(false);
+
+  const switchLevel = useCallback((newLevelId: string): void => {
+    if (newLevelId === currentLevelId) {
+      setShowLevelSelector(false);
+      return;
+    }
+    saveGameState(
+      {
+        board: boardRef.current,
+        coins: coinsRef.current,
+        maxLevel: maxLevelRef.current,
+        unlockedLevels: unlockedLevelsRef.current,
+        unlockTimes: unlockTimesRef.current,
+      },
+      ordersRef.current,
+      spawnCooldownEndRef.current,
+      currentLevelId
+    );
+    saveCurrentLevelId(newLevelId);
+    setCurrentLevelId(newLevelId);
+    setTimelineLevelId(newLevelId);
+    const newConfig = getLevelConfig(newLevelId);
+    const newLoaded = loadGameState(newLevelId);
+    setBoard(newLoaded.state.board);
+    setCoins(newLoaded.state.coins);
+    setMaxLevel(newLoaded.state.maxLevel);
+    setUnlockedLevels(newLoaded.state.unlockedLevels);
+    setUnlockTimes(newLoaded.state.unlockTimes);
+    setOrders(newLoaded.orders.length > 0 ? newLoaded.orders : generateOrders([1], newConfig));
+    setSpawnCooldownEnd(newLoaded.spawnCooldownEnd);
+    setSpawnCooldown(0);
+    spawnCooldownEndRef.current = newLoaded.spawnCooldownEnd;
+    spawnCooldownRef.current = 0;
+    const hint = findNextMergeHint(newLoaded.state.board, newConfig);
+    setMergeHint(hint);
+    const plan = calculateSynthesisPlan(newLoaded.state.board, newLoaded.state.unlockedLevels, newLoaded.orders, newConfig);
+    setSynthesisPlan(plan);
+    setShowLevelSelector(false);
+    showToast(`🔀 已切换到 ${newConfig.name}`);
+  }, [currentLevelId, showToast]);
+
   const boardRef = useRef<(number | null)[]>(board);
   const coinsRef = useRef<number>(coins);
   const maxLevelRef = useRef<number>(maxLevel);
@@ -1150,9 +1338,9 @@ function App(): React.ReactElement {
   }, []);
 
   const recalcMergeHint = useCallback((newBoard: (number | null)[]): void => {
-    const hint = findNextMergeHint(newBoard);
+    const hint = findNextMergeHint(newBoard, currentConfig);
     setMergeHint(hint);
-  }, []);
+  }, [currentConfig]);
 
   const recalcEventMergeHint = useCallback((newBoard: (number | null)[]): void => {
     const hint = findNextMergeHint(newBoard);
@@ -1161,10 +1349,10 @@ function App(): React.ReactElement {
 
   const recalcSynthesisPlan = useCallback(
     (newBoard: (number | null)[], newUnlockedLevels: number[], newOrders: Order[]): void => {
-      const plan = calculateSynthesisPlan(newBoard, newUnlockedLevels, newOrders);
+      const plan = calculateSynthesisPlan(newBoard, newUnlockedLevels, newOrders, currentConfig);
       setSynthesisPlan(plan);
     },
-    []
+    [currentConfig]
   );
 
   const dismissUnlockCelebration = useCallback((): void => {
@@ -1183,10 +1371,11 @@ function App(): React.ReactElement {
         unlockTimes: unlockTimesRef.current,
       },
       ordersRef.current,
-      spawnCooldownEndRef.current
+      spawnCooldownEndRef.current,
+      currentLevelId
     );
     setLastSaveTime(Date.now());
-  }, []);
+  }, [currentLevelId]);
 
   useEffect(() => {
     saveGameState(
@@ -1198,10 +1387,11 @@ function App(): React.ReactElement {
         unlockTimes,
       },
       orders,
-      spawnCooldownEnd
+      spawnCooldownEnd,
+      currentLevelId
     );
     setLastSaveTime(Date.now());
-  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders, spawnCooldownEnd]);
+  }, [board, coins, maxLevel, unlockedLevels, unlockTimes, orders, spawnCooldownEnd, currentLevelId]);
 
   useEffect(() => {
     recalcMergeHint(board);
@@ -1397,16 +1587,16 @@ function App(): React.ReactElement {
       localStorage.removeItem(TUTORIAL_KEY);
       localStorage.removeItem(RECENTLY_UNLOCKED_KEY);
 
-      const newBoard = createInitialBoard();
+      const newBoard = createInitialBoard(currentConfig);
       const newUnlockedLevels = [1];
       const newUnlockTimes = { 1: new Date().toISOString() };
 
       setBoard(newBoard);
-      setCoins(INITIAL_COINS);
+      setCoins(currentConfig.initialCoins);
       setMaxLevel(1);
       setUnlockedLevels(newUnlockedLevels);
       setUnlockTimes(newUnlockTimes);
-      setOrders(generateOrders(newUnlockedLevels));
+      setOrders(generateOrders(newUnlockedLevels, currentConfig));
       setRecentlyUnlocked(null);
       setTutorial({
         currentStep: "welcome",
@@ -1420,6 +1610,10 @@ function App(): React.ReactElement {
       setShowTutorial(true);
       setLastSaveTime(Date.now());
 
+      const multiData = loadMultiLevelSaves();
+      multiData.levels[currentLevelId] = createEmptyLevelSave(currentLevelId);
+      saveMultiLevelSaves(multiData);
+
       showToast("🔄 进度已重置，开始新游戏！");
     } catch (e) {
       console.error("重置进度失败:", e);
@@ -1427,7 +1621,7 @@ function App(): React.ReactElement {
     }
     setShowResetConfirm(false);
     setShowSavePanel(false);
-  }, [showToast, refreshTimeline]);
+  }, [showToast, refreshTimeline, currentConfig, currentLevelId]);
 
   const formatLastSaveTime = useCallback((): string => {
     const diff = Date.now() - lastSaveTime;
@@ -1984,12 +2178,12 @@ function App(): React.ReactElement {
   }, [offlineReward, showToast, advanceTutorialStep, refreshTimeline]);
 
   const checkOfflineReward = useCallback((): void => {
-    const reward = calculateOfflineReward();
+    const reward = calculateOfflineReward(currentConfig);
     setOfflineReward(reward);
     if (reward.isValid && hasUnclaimedReward()) {
       setShowOfflineModal(true);
     }
-  }, []);
+  }, [currentConfig]);
 
   useEffect(() => {
     checkOfflineReward();
@@ -1997,12 +2191,12 @@ function App(): React.ReactElement {
 
   useEffect(() => {
     const handleBeforeUnload = (): void => {
-      recordLeaveTime(maxLevelRef.current);
+      recordLeaveTime(maxLevelRef.current, currentConfig);
     };
 
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === "hidden") {
-        recordLeaveTime(maxLevelRef.current);
+        recordLeaveTime(maxLevelRef.current, currentConfig);
       } else if (document.visibilityState === "visible") {
         checkOfflineReward();
       }
@@ -2068,29 +2262,31 @@ function App(): React.ReactElement {
   }, [spawnCooldownEnd, updateSpawnCooldownFromTimestamp]);
 
   const startSpawnCooldown = useCallback((): void => {
-    const newEnd = Date.now() + SPAWN_COOLDOWN_SECONDS * 1000;
+    const cooldownSec = currentConfig.spawnCooldownSeconds;
+    const newEnd = Date.now() + cooldownSec * 1000;
     spawnCooldownEndRef.current = newEnd;
     setSpawnCooldownEnd(newEnd);
-    spawnCooldownRef.current = SPAWN_COOLDOWN_SECONDS;
-    setSpawnCooldown(SPAWN_COOLDOWN_SECONDS);
-  }, []);
+    spawnCooldownRef.current = cooldownSec;
+    setSpawnCooldown(cooldownSec);
+  }, [currentConfig]);
 
   const getSpawnStatus = useCallback((): SpawnStatus => {
     const now = Date.now();
     const isCooldown = spawnCooldownEndRef.current > now;
-    const hasNoCoins = coinsRef.current < SPAWN_COST;
+    const hasNoCoins = coinsRef.current < currentConfig.spawnCost;
     const emptyIndex = getRandomEmptyCell(boardRef.current);
     const isBoardFull = emptyIndex === null;
     if (isCooldown) return "cooldown";
     if (isBoardFull) return "board_full";
     if (hasNoCoins) return "no_coins";
     return "ready";
-  }, [getRandomEmptyCell]);
+  }, [getRandomEmptyCell, currentConfig]);
 
   const spawnDessert = useCallback((targetLevel?: number, freeSpawn: boolean = false): boolean => {
     if (isSpawningRef.current) {
       return false;
     }
+    const spawnCost = currentConfig.spawnCost;
     const now = Date.now();
     if (!freeSpawn && spawnCooldownEndRef.current > now) {
       const remainingMs = spawnCooldownEndRef.current - now;
@@ -2105,22 +2301,22 @@ function App(): React.ReactElement {
       return false;
     }
 
-    if (!freeSpawn && coinsRef.current < SPAWN_COST) {
-      showToast(`💰 金币不足！需要 ${SPAWN_COST} 金币`);
+    if (!freeSpawn && coinsRef.current < spawnCost) {
+      showToast(`💰 金币不足！需要 ${spawnCost} 金币`);
       return false;
     }
 
     try {
       isSpawningRef.current = true;
-      const maxSpawnLevel = Math.min(maxLevelRef.current, SPAWN_MAX_LEVEL);
-      const levelRange = maxSpawnLevel - SPAWN_MIN_LEVEL + 1;
+      const maxSpawnLevel = Math.min(maxLevelRef.current, currentConfig.spawnMaxLevel);
+      const levelRange = maxSpawnLevel - currentConfig.spawnMinLevel + 1;
       const level = targetLevel || Math.min(
-        Math.floor(Math.random() * levelRange) + SPAWN_MIN_LEVEL,
-        DESSERTS.length
+        Math.floor(Math.random() * levelRange) + currentConfig.spawnMinLevel,
+        currentConfig.desserts.length
       );
 
       if (!freeSpawn) {
-        setCoins((prev: number) => prev - SPAWN_COST);
+        setCoins((prev: number) => prev - spawnCost);
       }
       const newBoard = [...boardRef.current];
       newBoard[emptyIndex] = level;
@@ -2130,10 +2326,10 @@ function App(): React.ReactElement {
         startSpawnCooldown();
       }
 
-      const dessert = DESSERTS[level - 1];
-      showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${SPAWN_COST}💰`}`);
+      const dessert = currentConfig.desserts[level - 1];
+      showToast(`🍰 生成了 ${dessert.emoji} ${dessert.name}！${freeSpawn ? "" : `-${spawnCost}💰`}`);
       
-      recordSpawn(level, emptyIndex, SPAWN_COST, freeSpawn);
+      recordSpawn(level, emptyIndex, spawnCost, freeSpawn);
       refreshTimeline();
       
       if (!freeSpawn) {
@@ -2146,7 +2342,7 @@ function App(): React.ReactElement {
         isSpawningRef.current = false;
       }, 50);
     }
-  }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep, refreshTimeline]);
+  }, [getRandomEmptyCell, showToast, startSpawnCooldown, advanceTutorialStep, refreshTimeline, currentConfig]);
 
   const triggerSuccessFeedback = useCallback((index: number): void => {
     setFeedback({
@@ -2181,8 +2377,10 @@ function App(): React.ReactElement {
   }, []);
 
   const performMerge = useCallback((sourceIndex: number, targetIndex: number): boolean => {
-    if (sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= BOARD_SIZE
-        || targetIndex < 0 || targetIndex >= BOARD_SIZE) {
+    const boardSize = currentConfig.boardSize;
+    const desserts = currentConfig.desserts;
+    if (sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= boardSize
+        || targetIndex < 0 || targetIndex >= boardSize) {
       return false;
     }
 
@@ -2206,12 +2404,12 @@ function App(): React.ReactElement {
 
     if (sourceLevel === targetLevel) {
       const newLevel = sourceLevel + 1;
-      if (newLevel > DESSERTS.length) {
+      if (newLevel > desserts.length) {
         showToast("⭐ 已达到最高等级！");
         triggerFailFeedback([sourceIndex, targetIndex]);
         return false;
       } else {
-        const coinReward = calculateMergeReward(newLevel, false);
+        const coinReward = calculateMergeReward(newLevel, false, currentConfig);
         const newBoard = [...boardRef.current];
         newBoard[targetIndex] = newLevel;
         newBoard[sourceIndex] = null;
@@ -2224,14 +2422,14 @@ function App(): React.ReactElement {
         setBoard(newBoard);
         setCoins((prev: number) => prev + coinReward);
         triggerSuccessFeedback(targetIndex);
-        showToast(`✨ 合成${DESSERTS[newLevel - 1].name}！+${coinReward}金币`);
+        showToast(`✨ 合成${desserts[newLevel - 1].name}！+${coinReward}金币`);
 
         recordMerge(sourceIndex, targetIndex, sourceLevel, newLevel, coinReward, isNewMaxLevel);
         refreshTimeline();
 
         if (isNewMaxLevel) {
           setMaxLevel(newLevel);
-          setTimeout(() => showToast(`🎉 解锁新等级：${DESSERTS[newLevel - 1].name}！`), 800);
+          setTimeout(() => showToast(`🎉 解锁新等级：${desserts[newLevel - 1].name}！`), 800);
         }
         if (!unlockedLevelsRef.current.includes(newLevel)) {
           const unlockData: RecentlyUnlocked = {
@@ -2251,7 +2449,7 @@ function App(): React.ReactElement {
         advanceTutorialStep("merge");
 
         setTimeout(() => {
-          const nextHint = findNextMergeHint(newBoard);
+          const nextHint = findNextMergeHint(newBoard, currentConfig);
           if (nextHint) {
             setMergeHint(nextHint);
             setShowMergeHint(true);
@@ -2266,11 +2464,11 @@ function App(): React.ReactElement {
       showToast("❌ 等级不同，无法合成！");
       return false;
     }
-  }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep, refreshTimeline]);
+  }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep, refreshTimeline, currentConfig]);
 
   const getCellIndexFromPoint = useCallback((clientX: number, clientY: number, isEvent: boolean): number | null => {
     const cells = isEvent ? eventCellRefs.current : cellRefs.current;
-    const boardSize = isEvent ? EVENT_BOARD_SIZE : BOARD_SIZE;
+    const boardSize = isEvent ? EVENT_BOARD_SIZE : currentConfig.boardSize;
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
       if (!cell) continue;
@@ -2523,23 +2721,25 @@ function App(): React.ReactElement {
     setTimeout(() => {
       setOrders((prev: Order[]) => {
         const remaining = prev.filter((o: Order) => !o.completed);
-        const newOrders = generateOrders(unlockedLevelsRef.current, MAX_ORDERS - remaining.length);
-        return [...remaining, ...newOrders];
+        const newOrders = generateOrders(unlockedLevelsRef.current, currentConfig);
+        const needed = currentConfig.maxOrders - remaining.length;
+        return [...remaining, ...newOrders.slice(0, needed)];
       });
     }, 1500);
-  }, [showToast, advanceTutorialStep, refreshTimeline]);
+  }, [showToast, advanceTutorialStep, refreshTimeline, currentConfig]);
 
   const handleRefreshOrders = useCallback((): void => {
     if (unlockedLevelsRef.current.length === 0) {
       showToast("❌ 没有解锁的甜品，无法生成订单！");
       return;
     }
-    setOrders(generateOrders(unlockedLevelsRef.current));
+    setOrders(generateOrders(unlockedLevelsRef.current, currentConfig));
     showToast("📋 订单已刷新！");
-  }, [showToast]);
+  }, [showToast, currentConfig]);
 
   const organizeBoard = useCallback((): void => {
-    const newBoard = Array(BOARD_SIZE).fill(null);
+    const boardSize = currentConfig.boardSize;
+    const newBoard = Array(boardSize).fill(null);
     const nonNullCells = boardRef.current.filter((cell: number | null) => cell !== null) as number[];
     const levelCounts = new Map<number, number>();
     nonNullCells.forEach((level) => {
@@ -2560,7 +2760,7 @@ function App(): React.ReactElement {
     refreshTimeline();
     
     setTimeout(() => {
-      const nextHint = findNextMergeHint(newBoard);
+      const nextHint = findNextMergeHint(newBoard, currentConfig);
       if (nextHint) {
         setMergeHint(nextHint);
         setShowMergeHint(true);
@@ -2569,7 +2769,7 @@ function App(): React.ReactElement {
     }, 300);
     
     showToast("🧹 整理完成！相同等级甜品已聚拢");
-  }, [showToast, refreshTimeline]);
+  }, [showToast, refreshTimeline, currentConfig]);
 
   const handleAction = (action: string): void => {
     if (action === "生成甜品") {
@@ -2577,7 +2777,7 @@ function App(): React.ReactElement {
     } else if (action === "自动整理") {
       organizeBoard();
     } else if (action === "领取收益") {
-      const reward = calculateOfflineReward();
+      const reward = calculateOfflineReward(currentConfig);
       setOfflineReward(reward);
       setShowOfflineModal(true);
     }
@@ -2693,8 +2893,69 @@ function App(): React.ReactElement {
     <main className={mainClass}>
       {toast && <div className="toast">{toast}</div>}
 
+      {showLevelSelector && (
+        <div className="modal-overlay" onClick={() => setShowLevelSelector(false)}>
+          <div className="modal-content level-selector-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowLevelSelector(false)}>×</button>
+            <div className="level-selector-icon">🗺️</div>
+            <h2 className="level-selector-title">选择关卡</h2>
+            <p className="level-selector-subtitle">每个关卡拥有独立的甜品、棋盘和进度</p>
+            <div className="level-selector-list">
+              {LEVEL_ORDER.map((levelId) => {
+                const cfg = getLevelConfig(levelId);
+                const isActive = levelId === currentLevelId;
+                const multiData = loadMultiLevelSaves();
+                const levelSave = multiData.levels[levelId];
+                return (
+                  <button
+                    key={levelId}
+                    className={`level-selector-card ${isActive ? "active" : ""}`}
+                    onClick={() => switchLevel(levelId)}
+                  >
+                    <div className="level-card-header">
+                      <span className="level-card-icon">{cfg.icon}</span>
+                      <span className="level-card-name">{cfg.name}</span>
+                      {isActive && <span className="level-card-badge">当前</span>}
+                    </div>
+                    <p className="level-card-desc">{cfg.description}</p>
+                    <div className="level-card-stats">
+                      <span>棋盘 {cfg.boardSize}格</span>
+                      <span>生成 {cfg.spawnCost}💰</span>
+                      <span>离线 ×{cfg.offlineEarningsMultiplier}</span>
+                    </div>
+                    <div className="level-card-progress">
+                      {levelSave ? (
+                        <>
+                          <span>Lv.{levelSave.maxLevel}/{cfg.desserts.length}</span>
+                          <span>💰{levelSave.coins}</span>
+                          <span>📖{levelSave.unlockedLevels.length}/{cfg.desserts.length}</span>
+                        </>
+                      ) : (
+                        <span>尚未开始</span>
+                      )}
+                    </div>
+                    <div className="level-card-desserts">
+                      {cfg.desserts.slice(0, 5).map((d) => (
+                        <span key={d.level} className="level-card-dessert-emoji">{d.emoji}</span>
+                      ))}
+                      {cfg.desserts.length > 5 && <span className="level-card-dessert-more">+{cfg.desserts.length - 5}</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="level-selector-shared-info">
+              <h4>🌐 全局共享</h4>
+              <p>活动碎片 💎 · 成就系统 🏆 · 连续签到 🔥</p>
+              <h4>🔒 关卡独立</h4>
+              <p>棋盘 · 金币 · 图鉴进度 · 订单 · 离线收益</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {recentlyUnlocked && !recentlyUnlocked.seen && (() => {
-        const dessert = DESSERTS[recentlyUnlocked.level - 1];
+        const dessert = currentDesserts[recentlyUnlocked.level - 1];
         if (!dessert) return null;
         return (
           <div className="modal-overlay" onClick={dismissUnlockCelebration}>
@@ -3123,7 +3384,7 @@ function App(): React.ReactElement {
                   <div className="offline-info-row">
                     <span className="offline-info-label">最高甜品等级</span>
                     <span className="offline-info-value">
-                      Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.name}
+                      Lv.{offlineReward.maxLevel} {currentDesserts[Math.min(offlineReward.maxLevel - 1, currentDesserts.length - 1)]?.emoji} {currentDesserts[Math.min(offlineReward.maxLevel - 1, currentDesserts.length - 1)]?.name}
                     </span>
                   </div>
                   <div className="offline-info-row">
@@ -3194,7 +3455,7 @@ function App(): React.ReactElement {
                   <div className="offline-info-row">
                     <span className="offline-info-label">当前最高等级</span>
                     <span className="offline-info-value">
-                      Lv.{offlineReward.maxLevel} {DESSERTS[Math.min(offlineReward.maxLevel - 1, DESSERTS.length - 1)]?.emoji}
+                      Lv.{offlineReward.maxLevel} {currentDesserts[Math.min(offlineReward.maxLevel - 1, currentDesserts.length - 1)]?.emoji}
                     </span>
                   </div>
                   <div className="offline-info-row">
@@ -3248,7 +3509,7 @@ function App(): React.ReactElement {
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setSelectedDessert(null)}>×</button>
             {(() => {
-              const dessert = DESSERTS[selectedDessert - 1];
+              const dessert = currentDesserts[selectedDessert - 1];
               const unlockTime = unlockTimes[selectedDessert];
               return (
                 <>
@@ -3676,7 +3937,7 @@ function App(): React.ReactElement {
             background: eventMode && eventBoard[drag.sourceIndex]
               ? `linear-gradient(145deg, ${DESSERTS[eventBoard[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[eventBoard[drag.sourceIndex]! - 1].color}99)`
               : board[drag.sourceIndex]
-                ? `linear-gradient(145deg, ${DESSERTS[board[drag.sourceIndex]! - 1].color}dd, ${DESSERTS[board[drag.sourceIndex]! - 1].color}99)`
+                ? `linear-gradient(145deg, ${currentDesserts[board[drag.sourceIndex]! - 1].color}dd, ${currentDesserts[board[drag.sourceIndex]! - 1].color}99)`
                 : undefined,
           }}
         >
@@ -3684,7 +3945,7 @@ function App(): React.ReactElement {
             {eventMode && eventBoard[drag.sourceIndex]
               ? DESSERTS[eventBoard[drag.sourceIndex]! - 1].emoji
               : board[drag.sourceIndex]
-                ? DESSERTS[board[drag.sourceIndex]! - 1].emoji
+                ? currentDesserts[board[drag.sourceIndex]! - 1].emoji
                 : null}
           </span>
           <span className="dessert-level">
@@ -3695,8 +3956,11 @@ function App(): React.ReactElement {
 
       <section className="hero">
         <p>{game.id} · H5Game · Port {game.port}</p>
-        <h1>{game.title}</h1>
-        <span>{game.tagline}</span>
+        <h1>{currentConfig.icon} {currentConfig.name}</h1>
+        <span>{currentConfig.description}</span>
+        <button className="level-switch-btn" onClick={() => setShowLevelSelector(true)}>
+          🗺️ 切换关卡
+        </button>
       </section>
 
       <section className="hud">
@@ -3708,8 +3972,8 @@ function App(): React.ReactElement {
                 <strong>
                   {index === 0 ? coins :
                    index === 1 ? `${completedOrders}/${orders.length}` :
-                   index === 2 ? `${unlockedLevels.length}/${DESSERTS.length}` :
-                   `${maxLevel}级 ${DESSERTS[Math.min(maxLevel - 1, DESSERTS.length - 1)]?.emoji}`}
+                   index === 2 ? `${unlockedLevels.length}/${currentDesserts.length}` :
+                   `${maxLevel}级 ${currentDesserts[Math.min(maxLevel - 1, currentDesserts.length - 1)]?.emoji}`}
                 </strong>
               </article>
             ))}
@@ -3717,7 +3981,7 @@ function App(): React.ReactElement {
               <small>🎯 限时活动</small>
               <strong className="event-entry-text">点击进入 →</strong>
             </article>
-            <SimulationPanel currentMaxLevel={maxLevel} currentCoins={coins} />
+            <SimulationPanel currentMaxLevel={maxLevel} currentCoins={coins} currentLevelId={currentLevelId} />
             <article className="save-entry-article" onClick={() => setShowSavePanel(true)}>
               <small>💾 存档管理</small>
               <strong className="save-entry-text">
@@ -3760,7 +4024,7 @@ function App(): React.ReactElement {
           ref={boardRefEl}
         >
           {board.map((cell: number | null, index: number) => {
-            const dessert = cell ? DESSERTS[cell - 1] : null;
+            const dessert = cell ? currentDesserts[cell - 1] : null;
             return (
               <div
                 key={index}
@@ -3783,7 +4047,7 @@ function App(): React.ReactElement {
           })}
           {mergeHint && !drag.isDragging && feedback.type === null && (
             <div className="merge-hint-banner">
-              ✨ 可合成：{DESSERTS[mergeHint.level - 1].emoji} {DESSERTS[mergeHint.level - 1].name} × 2 → {DESSERTS[Math.min(mergeHint.level, DESSERTS.length)].emoji} {DESSERTS[Math.min(mergeHint.level, DESSERTS.length)].name}
+              ✨ 可合成：{currentDesserts[mergeHint.level - 1].emoji} {currentDesserts[mergeHint.level - 1].name} × 2 → {currentDesserts[Math.min(mergeHint.level, currentDesserts.length)].emoji} {currentDesserts[Math.min(mergeHint.level, currentDesserts.length)].name}
             </div>
           )}
         </div>
@@ -3858,8 +4122,8 @@ function App(): React.ReactElement {
                     <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
                       <div className="order-items">
                         {order.items.map(({ level, count }, idx: number) => {
-                          const dessert = DESSERTS[level - 1];
-                          const available = eventBoard.filter(c => c === level).length;
+                          const dessert = currentDesserts[level - 1];
+                          const available = board.filter(c => c === level).length;
                           const hasEnough = available >= count;
                           return (
                             <div key={idx} className={`order-item-row ${hasEnough ? "available" : "unavailable"}`}>
@@ -3964,7 +4228,7 @@ function App(): React.ReactElement {
                   <div key={order.id} className={`order-card ${order.completed ? "completed" : ""}`}>
                     <div className="order-items">
                       {mergedItems.map(({ level, count }, idx: number) => {
-                        const dessert = DESSERTS[level - 1];
+                        const dessert = currentDesserts[level - 1];
                         const available = countDessertsOnBoard(board, level);
                         const hasEnough = available >= count;
                         return (
@@ -4094,7 +4358,7 @@ function App(): React.ReactElement {
                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <span className="synthesis-plan-reachable-dessert">
                     {synthesisPlan.maxReachableLevel > 0 && synthesisPlan.maxReachableLevel <= DESSERTS.length
-                      ? DESSERTS[synthesisPlan.maxReachableLevel - 1]?.emoji
+                      ? currentDesserts[synthesisPlan.maxReachableLevel - 1]?.emoji
                       : "❓"}
                   </span>
                   <span className="synthesis-plan-reachable-value">
@@ -4158,7 +4422,7 @@ function App(): React.ReactElement {
                 <div className="synthesis-plan-suggestion-list">
                   {synthesisPlan.suggestions.slice(0, 4).map((suggestion, idx) => {
                     const dessert = suggestion.dessert;
-                    const resultDessert = DESSERTS[suggestion.level];
+                    const resultDessert = currentDesserts[suggestion.level];
                     const isHighPriority = idx === 0;
                     return (
                       <div
@@ -4300,7 +4564,7 @@ function App(): React.ReactElement {
                   </div>
                 );
               }
-              if (unlockedLevels.length >= DESSERTS.length) {
+              if (unlockedLevels.length >= currentDesserts.length) {
                 return (
                   <div className="next-unlock-hint-card next-unlock-complete">
                     <span>🏆 恭喜！图鉴已全部收集！</span>
@@ -4310,7 +4574,7 @@ function App(): React.ReactElement {
               return null;
             })()}
             <div className="collection-grid">
-              {DESSERTS.map((dessert) => {
+              {currentDesserts.map((dessert) => {
                 const isUnlocked = unlockedLevels.includes(dessert.level);
                 const unlockTime = unlockTimes[dessert.level];
                 return (
@@ -4339,7 +4603,7 @@ function App(): React.ReactElement {
                           <div className="collection-time">{formatUnlockTime(unlockTime)}</div>
                         )}
                         {!isUnlocked && (() => {
-                          const prevDessert = dessert.level > 1 ? DESSERTS[dessert.level - 2] : null;
+                          const prevDessert = dessert.level > 1 ? currentDesserts[dessert.level - 2] : null;
                           return (
                             <div className="collection-locked-hint">
                               {prevDessert ? `2× ${prevDessert.emoji} 合成` : "生成获取"}

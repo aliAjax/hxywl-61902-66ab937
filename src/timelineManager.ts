@@ -1,4 +1,4 @@
-import { DESSERTS, BOARD_SIZE } from "./gameConfig";
+import { DESSERTS, BOARD_SIZE, getLevelConfig, LevelConfig } from "./gameConfig";
 
 export const TIMELINE_VERSION = "1.1.0";
 export const TIMELINE_STORAGE_KEY = "hxywl-61902-timeline";
@@ -20,6 +20,7 @@ export interface TimelineRecordBase {
   type: TimelineActionType;
   timestamp: number;
   gameVersion: string;
+  levelId: string;
 }
 
 export interface TimelineSpawnRecord extends TimelineRecordBase {
@@ -182,8 +183,14 @@ export function pruneOldRecords(timeline: TimelineData): void {
   }
 }
 
+let currentLevelId: string = "classic";
+
+export function setTimelineLevelId(levelId: string): void {
+  currentLevelId = levelId;
+}
+
 export function recordAction<T extends TimelineRecord>(
-  partial: Omit<T, "id" | "timestamp" | "gameVersion">
+  partial: Omit<T, "id" | "timestamp" | "gameVersion" | "levelId">
 ): T {
   if (!currentTimeline) {
     loadTimeline();
@@ -194,6 +201,7 @@ export function recordAction<T extends TimelineRecord>(
     id: ++recordIdCounter,
     timestamp: Date.now(),
     gameVersion: TIMELINE_VERSION,
+    levelId: currentLevelId,
   } as T;
 
   if (currentTimeline) {
@@ -428,18 +436,19 @@ export function loadTimelineFromSaveData(
 
 export function formatTimelineRecord(record: TimelineRecord): string {
   const time = new Date(record.timestamp).toLocaleTimeString("zh-CN");
+  const desserts = getLevelConfig(record.levelId || "classic").desserts;
   switch (record.type) {
     case "spawn": {
-      const dessert = DESSERTS[record.level - 1];
+      const dessert = desserts[record.level - 1];
       return `${time} 🍰 生成 ${dessert?.emoji}${dessert?.name || `Lv.${record.level}`} #${record.index + 1} ${record.freeSpawn ? "(免费)" : `-${record.cost}💰`}`;
     }
     case "move": {
-      const dessert = DESSERTS[record.level - 1];
+      const dessert = desserts[record.level - 1];
       return `${time} 📦 移动 ${dessert?.emoji || ""} #${record.sourceIndex + 1} → #${record.targetIndex + 1}`;
     }
     case "merge": {
-      const source = DESSERTS[record.sourceLevel - 1];
-      const target = DESSERTS[record.targetLevel - 1];
+      const source = desserts[record.sourceLevel - 1];
+      const target = desserts[record.targetLevel - 1];
       return `${time} ✨ 合成 ${source?.emoji}+${source?.emoji} → ${target?.emoji}${target?.name} +${record.coinReward}💰${record.isNewMaxLevel ? " 🎉新等级!" : ""}`;
     }
     case "submit_order": {
@@ -469,9 +478,10 @@ export interface FormattedTimelineRecord {
 }
 
 export function formatTimelineRecordDetailed(record: TimelineRecord): FormattedTimelineRecord {
+  const desserts = getLevelConfig(record.levelId || "classic").desserts;
   switch (record.type) {
     case "spawn": {
-      const dessert = DESSERTS[record.level - 1];
+      const dessert = desserts[record.level - 1];
       return {
         icon: "🎯",
         title: `生成 ${dessert?.emoji || ""}${dessert?.name || `Lv.${record.level}`}`,
@@ -479,7 +489,7 @@ export function formatTimelineRecordDetailed(record: TimelineRecord): FormattedT
       };
     }
     case "move": {
-      const dessert = DESSERTS[record.level - 1];
+      const dessert = desserts[record.level - 1];
       return {
         icon: "📦",
         title: `移动 ${dessert?.emoji || ""}${dessert?.name || `Lv.${record.level}`}`,
@@ -487,8 +497,8 @@ export function formatTimelineRecordDetailed(record: TimelineRecord): FormattedT
       };
     }
     case "merge": {
-      const source = DESSERTS[record.sourceLevel - 1];
-      const result = DESSERTS[record.targetLevel - 1];
+      const source = desserts[record.sourceLevel - 1];
+      const result = desserts[record.targetLevel - 1];
       return {
         icon: "✨",
         title: `合成 ${result?.emoji || ""}${result?.name || `Lv.${record.targetLevel}`}`,
