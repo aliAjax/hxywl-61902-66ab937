@@ -2014,7 +2014,7 @@ function App(): React.ReactElement {
                 </div>
               </div>
               {(() => {
-                const nextHint = getNextUnlockHint(unlockedLevels, board);
+                const nextHint = getNextUnlockHint(unlockedLevels, board, currentConfig);
                 if (nextHint) {
                   return (
                     <div className="unlock-celebration-next-hint">
@@ -3372,7 +3372,7 @@ function App(): React.ReactElement {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <span className="synthesis-plan-reachable-dessert">
-                    {synthesisPlan.maxReachableLevel > 0 && synthesisPlan.maxReachableLevel <= DESSERTS.length
+                    {synthesisPlan.maxReachableLevel > 0 && synthesisPlan.maxReachableLevel <= currentDesserts.length
                       ? currentDesserts[synthesisPlan.maxReachableLevel - 1]?.emoji
                       : "❓"}
                   </span>
@@ -3478,11 +3478,11 @@ function App(): React.ReactElement {
             <div className="collection-header">
               <h3>📖 甜品图鉴</h3>
               <span className="collection-progress">
-                {unlockedLevels.length}/{DESSERTS.length}
+                {unlockedLevels.length}/{currentDesserts.length}
               </span>
             </div>
             {(() => {
-              const nextHint = getNextUnlockHint(unlockedLevels, board);
+              const nextHint = getNextUnlockHint(unlockedLevels, board, currentConfig);
               if (nextHint) {
                 return (
                   <div className="next-unlock-hint-card">

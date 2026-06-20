@@ -850,7 +850,7 @@ export function useGameProgress(): UseGameProgressResult {
         const newOrders: Order[] =
           sanitized.orders.length > 0
             ? (sanitized.orders as Order[])
-            : generateOrders(sanitized.unlockedLevels);
+            : generateOrders(sanitized.unlockedLevels, currentConfig);
 
         const importedCooldownEnd = sanitized.spawnCooldownEnd ?? 0;
         const now = Date.now();
