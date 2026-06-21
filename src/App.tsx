@@ -1496,6 +1496,34 @@ function App(): React.ReactElement {
     }
   }, [showToast, triggerSuccessFeedback, triggerFailFeedback, advanceTutorialStep, refreshTimeline, currentConfig]);
 
+  useEffect(() => {
+    const handleTestMerge = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { sourceIndex, targetIndex, isEvent } = customEvent.detail;
+      if (isEvent) {
+        eventPerformMerge(sourceIndex, targetIndex);
+      } else {
+        performMerge(sourceIndex, targetIndex);
+      }
+    };
+    window.addEventListener("test-merge", handleTestMerge);
+    return () => window.removeEventListener("test-merge", handleTestMerge);
+  }, [performMerge, eventPerformMerge]);
+
+  useEffect(() => {
+    const handleTestSpawn = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { isEvent } = customEvent.detail;
+      if (isEvent) {
+        eventSpawnDessert();
+      } else {
+        spawnDessert();
+      }
+    };
+    window.addEventListener("test-spawn", handleTestSpawn);
+    return () => window.removeEventListener("test-spawn", handleTestSpawn);
+  }, [spawnDessert, eventSpawnDessert]);
+
   const getCellIndexFromPoint = useCallback((clientX: number, clientY: number, isEvent: boolean): number | null => {
     const cells = isEvent ? eventCellRefs.current : cellRefs.current;
     const boardSize = isEvent ? EVENT_BOARD_SIZE : currentConfig.boardSize;
